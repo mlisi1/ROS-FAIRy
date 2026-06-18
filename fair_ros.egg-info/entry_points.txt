@@ -1,0 +1,16 @@
+[console_scripts]
+fair-ros-watchdog = fair_ros.watchdog.watchdog:main
+
+[fair.verb]
+list = fair_ros.subcommands.list_missions:ListVerb
+mission_close = fair_ros.subcommands.mission_close:MissionCloseVerb
+mission_record = fair_ros.subcommands.mission_record:MissionRecordVerb
+mission_start = fair_ros.subcommands.mission_start:MissionStartVerb
+mission_status = fair_ros.subcommands.mission_status:MissionStatusVerb
+setup = fair_ros.subcommands.setup:SetupVerb
+
+[ros2cli.command]
+fair = fair_ros.command.fair:FairCommand
+
+[ros2cli.extension_point]
+fair.verb = fair_ros.subcommands:VerbExtension
