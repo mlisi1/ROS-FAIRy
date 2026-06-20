@@ -22,7 +22,6 @@ def _fake_dist(name: str, version: str, installer: str | None = "pip",
                direct_url: dict | None = None) -> MagicMock:
     dist = MagicMock()
     dist.metadata = {"Name": name, "Version": version}
-    dist.metadata.get = lambda k, d=None: {"Name": name, "Version": version}.get(k, d)
 
     def read_text(fname):
         if fname == "INSTALLER":

@@ -1,6 +1,7 @@
 """ros2 fair mission_close — the single save/discard decision."""
 
 import shutil
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -104,8 +105,12 @@ def run(args, console: Console | None = None) -> int:
     note_arg = getattr(args, "note", None)
     if note_arg is not None:
         new_notes = note_arg.strip() or None
-    else:
+    elif sys.stdin.isatty():
         new_notes = briefing.ask_notes(console, default=existing_notes)
+    else:
+        # Non-interactive (piped/scripted): keep whatever notes exist rather
+        # than blocking on a prompt nobody can answer.
+        new_notes = existing_notes
     if new_notes != existing_notes:
         context.setdefault("intent", {})["notes"] = new_notes
         fsio.atomic_write_json(paths.mission_context_path(), context)

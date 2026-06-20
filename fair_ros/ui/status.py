@@ -23,9 +23,6 @@ _MODULE_LABELS = {
     "docker_info": "container software",
 }
 
-# Modules whose "skipped" status is unremarkable and not shown to the operator.
-_SILENT_SKIPPED = frozenset({"docker_info", "hardware_devices"})
-
 
 def _pid_alive(pid) -> bool:
     return isinstance(pid, int) and Path(f"/proc/{pid}").exists()
@@ -70,8 +67,7 @@ def harvest_lines(state: dict | None) -> list[str]:
         elif result == "partial":
             lines.append(f"⚠ {label} (partial)")
         elif result == "skipped":
-            if module not in _SILENT_SKIPPED:
-                lines.append(f"– {label} (not available)")
+            lines.append(f"– {label} (not used on this robot)")
         else:
             lines.append(f"✗ {label} — will keep trying")
     return lines
