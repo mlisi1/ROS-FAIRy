@@ -20,17 +20,23 @@ Authoritative definition of every field in a `MissionRecord`. The Pydantic model
 
 ```
 MissionRecord
-├── schema_version: str          # literal "1.0"
-├── identity:      Identity
-├── intent:        Intent
-├── robot:         Robot
-├── sensors:       list[Sensor]
-├── software:      Software
-├── ros_graph:     RosGraph
-├── calibrations:  list[Calibration]
-├── bags:          list[Bag]
-└── provenance:    Provenance
+├── schema_version:    str          # literal "1.0"
+├── identity:          Identity
+├── intent:            Intent
+├── robot:             Robot
+├── sensors:           list[Sensor]
+├── software:          Software
+├── ros_graph:         RosGraph
+├── calibrations:      list[Calibration]
+├── bags:              list[Bag]
+├── hardware_devices:  list[HardwareDevice]
+└── provenance:        Provenance
 ```
+
+`hardware_devices`, `software.python_env`, and their sub-models (below) were
+added after the initial `schema_version "1.0"` release. They are additive and
+optional (empty-list / `None` defaults), so records written before they existed
+still validate; `schema_version` stays `"1.0"`.
 
 ---
 
@@ -89,6 +95,7 @@ with a liveness check (topic present in `ros2 topic list` output).
 | `apt_ros_versions` | `dict[str, str]` | yes | auto | system_info (`dpkg-query -W ros-*`) | Debian package → version for installed `ros-<distro>-*` packages. Empty dict on non-Debian systems. |
 | `docker_containers` | `list[DockerContainer]` | yes | auto | `harvest/docker_info.py` | Empty list when Docker is absent or has no running containers. |
 | `fair_ros_version` | `str` | yes | auto | `fair_ros.__version__` | Version of this tool at harvest time. |
+| `python_env` | `PythonEnv \| None` | no | auto | `harvest/python_env.py` | The Python runtime fair-ros ran in and its installed packages. `None` only if the module raised unexpectedly; a broken pip still yields a partial `PythonEnv`. |
 
 ### `DockerContainer`
 
@@ -99,6 +106,37 @@ with a liveness check (topic present in `ros2 topic list` output).
 | `digest` | `str \| None` | First `RepoDigests` entry; `None` for locally built, never-pushed images. |
 | `compose_project` | `str \| None` | From label `com.docker.compose.project`. |
 | `compose_file` | `str \| None` | From label `com.docker.compose.project.config_files`; the file is snapshotted into the archive (see `specs/archive.md`). |
+
+### `PythonEnv`
+
+Captured by `harvest/python_env.py` using `sys`, `importlib.metadata`, and
+best-effort subprocess `pip` calls to the current interpreter. Structured fields
+come from `importlib.metadata` (always available); pip is only consulted for the
+raw freeze/list artifacts and to fill `installer`/`location` gaps. All `auto`.
+
+| Field | Type | Req | Source | Description |
+|---|---|---|---|---|
+| `executable` | `str` | yes | `sys.executable` | Absolute path to the interpreter fair-ros ran under. |
+| `version` | `str` | yes | `sys.version` | Full interpreter version string. |
+| `venv_path` | `str \| None` | no | `$VIRTUAL_ENV`, else `sys.prefix` when not `/usr` or `/usr/local` | Active virtual environment root; `None` for the system interpreter. |
+| `pip_version` | `str \| None` | no | `importlib.metadata.version("pip")` | `None` when pip is absent. |
+| `packages` | `list[PythonPackage]` | yes | `importlib.metadata.distributions()` | All installed distributions, sorted by normalised name. |
+| `fair_ros_editable` | `bool` | yes | `direct_url.json` of the `fair_ros` dist | Whether this tool itself runs from an editable install. `False` in production. |
+| `sys_path` | `list[str]` | yes | `sys.path` | Module search path at harvest time. |
+
+The text of `pip freeze` and `pip list --format=json` are **not** fields here;
+they are stored in `harvest.json → raw_python_env` and extracted to
+`harvest/pip_freeze.txt` by the assembler (see `specs/archive.md`).
+
+#### `PythonPackage`
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `str` | Distribution name. |
+| `version` | `str` | Installed version. |
+| `installer` | `str \| None` | From the dist-info `INSTALLER` file (`pip`, `conda`, `apt`, …); `None` when absent. |
+| `editable` | `bool` | `True` for editable/develop installs (PEP 610 `direct_url.json` or pip's `editable_project_location`). |
+| `location` | `str \| None` | Source directory for editable/local installs; `None` otherwise. |
 
 ## `ros_graph`
 
@@ -155,6 +193,33 @@ watchdog FINALISING step from rosbag2's own `metadata.yaml` plus
 | `duration_s` | `float \| None` | Length of the gap. |
 | `plain_text` | `str` | Pre-rendered sentence shown to the user: "GPS signal was lost for 4 minutes, starting 12 minutes in." UI layers must show this string, never the raw numbers. |
 
+## `hardware_devices[]`
+
+Connected sensors and hardware devices discovered by `harvest/hardware_devices.py`.
+Read-only and non-invasive: every external command has a timeout, missing
+binaries and permission-denied results yield a partial harvest, never a failure.
+Empty list is always valid and never a validation requirement. All `auto`.
+
+| Field | Type | Req | Source | Description |
+|---|---|---|---|---|
+| `device_class` | `str \| None` | no | inferred | `usb`, `pci`, `video`, `serial`. |
+| `vendor_id` | `str \| None` | no | `lsusb` / udev | 4-char lowercase hex. |
+| `product_id` | `str \| None` | no | `lsusb` / udev | 4-char lowercase hex. |
+| `vendor_name` | `str \| None` | no | `lsusb` / `lspci` / udev | Human vendor name. |
+| `product_name` | `str \| None` | no | `lsusb` / `lspci` / udev / by-id | Product description. |
+| `serial_number` | `str \| None` | no | `lsusb -v` / udev `ID_SERIAL_SHORT` | **Potentially identifying** — allowed but flagged as such in the archive README. |
+| `device_path` | `str \| None` | no | `/dev/*` glob / udev | e.g. `/dev/ttyUSB0`, `/dev/video0`. |
+| `bus_path` | `str \| None` | no | `lsusb` / `lspci` | e.g. `Bus 002 Device 003`. |
+| `driver` | `str \| None` | no | udev `ID_DRIVER` | Bound kernel module. |
+| `source_command` | `str` | yes | harvest code | Origin of the entry: `lsusb`, `lspci`, `v4l2-ctl`, `glob:/dev/ttyUSB*`, etc. |
+| `udev_properties` | `dict[str, str] \| None` | no | `udevadm info` | **Whitelisted keys only** (`DEVNAME`, `DEVTYPE`, `SUBSYSTEM`, `ID_BUS`, `ID_VENDOR`, `ID_VENDOR_ID`, `ID_MODEL`, `ID_MODEL_ID`, `ID_SERIAL_SHORT`, `ID_USB_CLASS`, `ID_USB_SUBCLASS`, `ID_DRIVER`, `ID_PATH`, `MAJOR`, `MINOR`); any other key is dropped. |
+
+**Privacy rule:** the module never collects secrets, Wi-Fi/SSH credentials, user
+files, wholesale environment variables, or home-directory contents. The raw
+`lsusb -v` dump and filtered `dmesg` lines go to `harvest.json → raw_hardware`
+and are extracted to `harvest/lsusb_verbose.txt` / `harvest/dmesg_usb.txt` by the
+assembler — never into the manifest.
+
 ## `provenance`
 
 | Field | Type | Req | Conf | Source | Description |
@@ -167,7 +232,7 @@ watchdog FINALISING step from rosbag2's own `metadata.yaml` plus
 | `kernel` | `str` | yes | auto | system_info (`uname -sr`) | |
 | `arch` | `str` | yes | auto | system_info (`uname -m`) | |
 | `field_confidence` | `dict[str, str]` | yes | auto | builder | Flat map of dotted field path → `"auto"` \| `"user"`, e.g. `"intent.goal": "user"`. Covers every populated leaf field. This is the single machine-readable source of confidence tags. |
-| `harvest_status` | `dict[str, str]` | yes | auto | watchdog | Per harvest module: `ok`, `failed`, `skipped`, `timeout`. Module keys: `robot_identity`, `system_info`, `ros_graph`, `ros_descriptions`, `docker_info`. |
+| `harvest_status` | `dict[str, str]` | yes | auto | watchdog | Per harvest module: `ok`, `failed`, `skipped`, `timeout`, or `partial`. Module keys: `robot_identity`, `system_info`, `python_env`, `hardware_devices`, `ros_graph`, `ros_descriptions`, `docker_info`. `partial` (used by `python_env` and `hardware_devices`) means some sub-commands succeeded and others were missing, timed out, or permission-denied. The canonical key list is `manifest/builder.HARVEST_MODULES`. |
 
 ---
 
@@ -176,8 +241,11 @@ watchdog FINALISING step from rosbag2's own `metadata.yaml` plus
 Two JSON files in `/var/fair-ros/spool/` feed `manifest/builder.py`:
 
 - **`harvest.json`** — written by the watchdog. Contains `robot`, `sensors`,
-  `software`, `ros_graph`, `bags` (added at FINALISING), and the `provenance`
-  harvest fields. All `auto`.
+  `software` (including `python_env`), `ros_graph`, `hardware_devices`, `bags`
+  (added at FINALISING), and the `provenance` harvest fields. All `auto`. It also
+  carries raw-artifact keys consumed only by the assembler, never by the
+  manifest: `raw_docker_inspect`, `raw_python_env` (`pip_freeze`,
+  `pip_list_json`), and `raw_hardware` (`lsusb_verbose`, `dmesg_usb`).
 - **`mission_context.json`** — written by `mission_start`. Contains `identity`
   (id, created_at, operator) and `intent`. All `user` except the generated id.
 

@@ -155,6 +155,8 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
         instruments.append({"@id": "#robot"})
     if record.software.ros_distro:
         instruments.append({"@id": "#ros2"})
+    if record.software.python_env:
+        instruments.append({"@id": "#python-runtime"})
     instruments += [{"@id": f"#container-{c.name}"}
                     for c in record.software.docker_containers]
     mission: dict = {
@@ -182,6 +184,18 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
         graph.append({"@id": "#ros2", "@type": "SoftwareApplication",
                       "name": "ROS 2", "version": record.software.ros_distro,
                       "url": "https://ros.org"})
+    if record.software.python_env:
+        pe = record.software.python_env
+        py_entity = {"@id": "#python-runtime",
+                     "@type": "SoftwareApplication",
+                     "name": "Python",
+                     "version": pe.version,
+                     "additionalProperty": [_prop("executable",
+                                                  pe.executable)]}
+        if pe.venv_path:
+            py_entity["additionalProperty"].append(
+                _prop("venv_path", pe.venv_path))
+        graph.append(py_entity)
     for container in record.software.docker_containers:
         entity = {"@id": f"#container-{container.name}",
                   "@type": "SoftwareApplication",

@@ -166,7 +166,12 @@ spool contents, and `mission_context.json`:
 - Mission briefing: operator + goal, or "not started yet".
 - Recording: active bag, size so far, "growing" indicator; or "none".
 - Context captured: per harvest module, plain words ("software versions ✓",
-  "robot description ✗ — will retry").
+  "robot description ✗ — will retry"). Modules: robot identity, computer
+  details, Python environment, connected hardware, software versions and
+  settings, robot description, container software. Glyphs: `✓` ok, `⚠` partial,
+  `–` skipped ("not used on this robot"), `✗` failed/timeout ("will keep
+  trying"). The `partial` state (`⚠`) applies to the Python environment and
+  connected-hardware modules when some sources were unavailable.
 
 `--json` flag emits the raw machine-readable status for scripts (the one
 sanctioned JSON output, since its audience is scripts, not operators).

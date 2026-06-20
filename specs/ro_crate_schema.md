@@ -32,6 +32,7 @@ SSN/SOSA** for sensors and observation context. The file is generated from the
 | The mission act | `CreateAction` | `#mission` | `identity` + `intent` |
 | fair-ros | `SoftwareApplication` | `https://github.com/<org>/fair-ros` | `provenance` |
 | ROS 2 | `SoftwareApplication` | `#ros2` | `software.ros_distro` |
+| Python runtime | `SoftwareApplication` | `#python-runtime` | `software.python_env` |
 | Each container image | `SoftwareApplication` | `#container-<name>` | `software.docker_containers[]` |
 | Each bag dir | `Dataset` | `bags/<dir>/` (trailing slash) | `bags[]` |
 | Each plain file | `File` | crate-relative path | manifest/cal/docker files |
@@ -87,10 +88,22 @@ Health warnings: each becomes a `comment` string on the bag Dataset, using the
 pre-rendered `plain_text`.
 
 **Software** — `#ros2`: `name: "ROS 2"`, `version: software.ros_distro`,
-`url: "https://ros.org"`. Containers: `name`, `softwareVersion` (image tag),
-`identifier` (digest, when present). The root Dataset does not list software in
-`hasPart` (they are not files); instead `#mission` lists them in `instrument`
-alongside the robot.
+`url: "https://ros.org"`. `#python-runtime` (emitted only when
+`software.python_env` is set): `name: "Python"`, `version: python_env.version`,
+plus `additionalProperty` PropertyValue pairs for `executable` and (when present)
+`venv_path`. Containers: `name`, `softwareVersion` (image tag), `identifier`
+(digest, when present). The root Dataset does not list software in `hasPart`
+(they are not files); instead `#mission` lists them in `instrument` alongside the
+robot, in order: `#robot`, `#ros2`, `#python-runtime`, `#container-<name>…`.
+
+**Hardware** — `hardware_devices[]` is **not** mapped to per-device contextual
+entities. A field robot exposes 15–30 USB/PCI entries (hubs, internal devices,
+dongles) and the link from a raw device to a declared `sosa:Sensor` is not
+established by the harvest layer, so individual entities would bloat the graph
+without adding trustworthy structure. The full inventory lives in
+`mission_record.json → hardware_devices[]`; humans read `harvest/lsusb_verbose.txt`.
+(A future version may add `schema:IndividualProduct` entities once
+sensor↔device matching exists.)
 
 **Provenance of the crate itself** — the `CreativeWork` descriptor gets
 `about → ./` (per spec) and `sdPublisher → fair-ros SoftwareApplication` with
@@ -198,7 +211,7 @@ only where the distinction matters: the root Dataset description, `#operator`,
       "name": "Field mission m-20260612-140258-9f3a",
       "description": "Survey eelgrass beds along the north bank",
       "agent": { "@id": "#operator" },
-      "instrument": [ { "@id": "#robot" }, { "@id": "#ros2" }, { "@id": "#container-navstack" } ],
+      "instrument": [ { "@id": "#robot" }, { "@id": "#ros2" }, { "@id": "#python-runtime" }, { "@id": "#container-navstack" } ],
       "location": { "@id": "#place" },
       "startTime": "2026-06-12T14:02:58+00:00",
       "endTime": "2026-06-12T14:44:31+00:00",
@@ -217,6 +230,16 @@ only where the distinction matters: the root Dataset description, `#operator`,
       "name": "ROS 2",
       "version": "jazzy",
       "url": "https://ros.org"
+    },
+    {
+      "@id": "#python-runtime",
+      "@type": "SoftwareApplication",
+      "name": "Python",
+      "version": "3.12.3 (main, Apr 10 2026, 09:12:00) [GCC 13.2.0]",
+      "additionalProperty": [
+        { "@type": "PropertyValue", "name": "executable", "value": "/opt/ros_ws/.venv/bin/python3" },
+        { "@type": "PropertyValue", "name": "venv_path", "value": "/opt/ros_ws/.venv" }
+      ]
     },
     {
       "@id": "#container-navstack",

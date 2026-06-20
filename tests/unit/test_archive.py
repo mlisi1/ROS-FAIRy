@@ -50,8 +50,32 @@ def _spool(fair_dirs, n_bags=1, with_cal=True):
                       "tf_static": [{"parent_frame": "base", "child_frame":
                                      "gps_link"}]},
         harvest_status={"robot_identity": "ok", "system_info": "ok",
+                        "python_env": "ok", "hardware_devices": "partial",
                         "ros_graph": "ok", "ros_descriptions": "ok",
-                        "docker_info": "ok"})
+                        "docker_info": "ok"},
+        python_env={
+            "python_env": {
+                "executable": "/opt/venv/bin/python3",
+                "version": "3.12.3 (main)",
+                "venv_path": "/opt/venv",
+                "pip_version": "24.0",
+                "packages": [{"name": "rclpy", "version": "5.0.0",
+                              "installer": "apt", "editable": False,
+                              "location": None}],
+                "fair_ros_editable": False,
+                "sys_path": ["/opt/venv/lib/python3.12/site-packages"]},
+            "pip_freeze": "rclpy==5.0.0\n",
+            "pip_list_json": None},
+        hardware_devices={
+            "devices": [{"device_class": "usb", "vendor_id": "1546",
+                         "product_id": "01a9", "vendor_name": "u-blox AG",
+                         "product_name": "ZED-F9P", "serial_number": None,
+                         "device_path": None,
+                         "bus_path": "Bus 002 Device 003", "driver": None,
+                         "source_command": "lsusb",
+                         "udev_properties": None}],
+            "lsusb_verbose": "Bus 002 Device 003: ID 1546:01a9\n",
+            "dmesg_usb": None})
     for i in range(n_bags):
         bag = make_bag(paths.bags_dir() / f"rosbag2_{i}",
                        {"/fix": _steady(T0 + i * 700, T0 + i * 700 + 600, 10)})
@@ -98,6 +122,11 @@ def test_assemble_full_crate(fair_dirs):
     assert (final / "harvest" / "tf_static.json").is_file()
     assert (final / "calibrations" / "gps0.yaml").is_file()
     assert (final / "docker" / "containers.json").is_file()
+    # python env + hardware raw artifacts extracted (dmesg was None → no file)
+    assert (final / "harvest" / "pip_freeze.txt").read_text() == \
+        "rclpy==5.0.0\n"
+    assert (final / "harvest" / "lsusb_verbose.txt").is_file()
+    assert not (final / "harvest" / "dmesg_usb.txt").exists()
     assert "Survey eelgrass beds" in (final / "README.md").read_text()
     # manifest updated with crate-relative paths and hashes
     saved = json.loads((final / "mission_record.json").read_text())
@@ -149,8 +178,16 @@ def test_ro_crate_document(fair_dirs):
     assert mission["agent"] == {"@id": "#operator"}
     assert {"@id": "#robot"} in mission["instrument"]
     assert {"@id": "#ros2"} in mission["instrument"]
+    assert {"@id": "#python-runtime"} in mission["instrument"]
     assert {"@id": "#container-navstack"} in mission["instrument"]
     assert mission["startTime"] == "2026-06-12T14:03:00+00:00"
+
+    py = by_id["#python-runtime"]
+    assert py["@type"] == "SoftwareApplication"
+    assert py["version"] == "3.12.3 (main)"
+    py_props = {p["name"]: p["value"] for p in py["additionalProperty"]}
+    assert py_props["executable"] == "/opt/venv/bin/python3"
+    assert py_props["venv_path"] == "/opt/venv"
 
     bag = by_id["bags/rosbag2_0/"]
     assert bag["encodingFormat"] == "application/x-sqlite3"
