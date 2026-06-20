@@ -10,14 +10,17 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 from inotify_simple import flags
 from rich.console import Console
 
+from fair_ros.archive import assembler
 from fair_ros.manifest import builder
 from fair_ros.subcommands import list_missions, mission_close, mission_start
 from fair_ros.utils import paths
 from fair_ros.watchdog.watchdog import Watchdog
 from tests.conftest import make_bag
+from tests.unit.test_archive import _spool
 from tests.unit.test_watchdog import FakeClock, FakeINotify, good_pipeline
 
 T0 = 1_750_000_000.0
@@ -94,3 +97,23 @@ def test_full_mission_lifecycle(fair_dirs):
     assert "Jane Doe" in listing
     assert "Marsh Creek" in listing
     assert "1" in listing  # the warning column
+
+
+def test_crate_loads_with_rocrate_library(fair_dirs):
+    """The generated crate must be loadable by the rocrate library.
+
+    This is the validation target named in specs/ro_crate_schema.md. Skipped
+    when the optional rocrate dependency is not installed.
+    """
+    ROCrate = pytest.importorskip("rocrate.rocrate").ROCrate
+
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    crate_dir = assembler.assemble(record, harvest)
+
+    crate = ROCrate(str(crate_dir))  # raises if the JSON-LD is malformed
+    ids = {e.id for e in crate.get_entities()}
+    # contextual + flattened PropertyValue entities all present
+    assert {"#python-runtime", "#ros2", "#robot", "#sensor-gps0", "#mission",
+            "#confidence-user", "#sensor-gps0-topic"} <= ids
+    assert crate.root_dataset["name"] == "Survey eelgrass beds"

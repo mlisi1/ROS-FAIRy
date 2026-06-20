@@ -31,7 +31,7 @@ setup(
                 "friction: automatic context capture, plain-language "
                 "briefings, RO-Crate archives.",
     license="Apache-2.0",
-    tests_require=["pytest"],
+    tests_require=["pytest", "rocrate"],
     entry_points={
         "ros2cli.command": [
             "fair = fair_ros.command.fair:FairCommand",

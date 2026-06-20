@@ -173,6 +173,10 @@ def test_ro_crate_document(fair_dirs):
     sensor = by_id["#sensor-gps0"]
     assert sensor["sosa:isHostedBy"] == {"@id": "#robot"}
     assert sensor["subjectOf"] == {"@id": "calibrations/gps0.yaml"}
+    # PropertyValues are hoisted into @id'd entities and referenced
+    assert {"@id": "#sensor-gps0-topic"} in sensor["additionalProperty"]
+    assert by_id["#sensor-gps0-topic"]["value"] == "/fix"
+    assert by_id["#sensor-gps0-topic"]["@type"] == "PropertyValue"
 
     mission = by_id["#mission"]
     assert mission["agent"] == {"@id": "#operator"}
@@ -185,13 +189,20 @@ def test_ro_crate_document(fair_dirs):
     py = by_id["#python-runtime"]
     assert py["@type"] == "SoftwareApplication"
     assert py["version"] == "3.12.3 (main)"
-    py_props = {p["name"]: p["value"] for p in py["additionalProperty"]}
+    py_props = {by_id[ref["@id"]]["name"]: by_id[ref["@id"]]["value"]
+                for ref in py["additionalProperty"]}
     assert py_props["executable"] == "/opt/venv/bin/python3"
     assert py_props["venv_path"] == "/opt/venv"
 
     bag = by_id["bags/rosbag2_0/"]
     assert bag["encodingFormat"] == "application/x-sqlite3"
-    assert bag["variableMeasured"][0]["name"] == "/fix"
+    first_var = by_id[bag["variableMeasured"][0]["@id"]]
+    assert first_var["name"] == "/fix"
+    assert first_var["value"] == 6001
+
+    # confidence markers share one hoisted entity, referenced by user fields
+    assert by_id["#operator"]["additionalProperty"] == {"@id": "#confidence-user"}
+    assert by_id["#confidence-user"]["value"] == "user"
     assert by_id["#ros2"]["version"] == "jazzy"
     assert by_id["#container-navstack"]["identifier"] == \
         "example/navstack@sha256:7be1"

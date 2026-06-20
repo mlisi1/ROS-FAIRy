@@ -17,12 +17,7 @@ _ENCODING = {
     "mcap": "application/x-mcap",
 }
 
-_CONFIDENCE_USER = {"@type": "PropertyValue", "name": "fair-ros:confidence",
-                    "value": "user"}
-
-
-def _prop(name: str, value) -> dict:
-    return {"@type": "PropertyValue", "name": name, "value": value}
+_CONFIDENCE_USER_ID = "#confidence-user"
 
 
 def build(record: MissionRecord, extra_files: list[dict] | None = None,
@@ -35,6 +30,27 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
     """
     extra_files = extra_files or []
     graph: list[dict] = []
+
+    # PropertyValue objects are hoisted into their own @id'd entities and
+    # referenced, so the crate is valid *flattened* JSON-LD (required for the
+    # rocrate library to load it). _pv registers one (deduped by @id) and
+    # returns the reference to embed in a parent.
+    pv_entities: list[dict] = []
+    _pv_seen: set[str] = set()
+
+    def _pv(pv_id: str, name: str, value, description: str | None = None
+            ) -> dict:
+        if pv_id not in _pv_seen:
+            _pv_seen.add(pv_id)
+            entity = {"@id": pv_id, "@type": "PropertyValue",
+                      "name": name, "value": value}
+            if description is not None:
+                entity["description"] = description
+            pv_entities.append(entity)
+        return {"@id": pv_id}
+
+    def _confidence_user() -> dict:
+        return _pv(_CONFIDENCE_USER_ID, "fair-ros:confidence", "user")
 
     graph.append({
         "@id": "ro-crate-metadata.json",
@@ -103,7 +119,7 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
 
     operator: dict = {"@id": "#operator", "@type": "Person",
                       "name": record.identity.operator_name,
-                      "additionalProperty": _CONFIDENCE_USER}
+                      "additionalProperty": _confidence_user()}
     if record.identity.operator_contact:
         operator["email"] = record.identity.operator_contact
     graph.append(operator)
@@ -115,7 +131,7 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
 
     graph.append({"@id": "#place", "@type": "Place",
                   "name": record.intent.location_name,
-                  "additionalProperty": _CONFIDENCE_USER})
+                  "additionalProperty": _confidence_user()})
 
     cal_paths = {c.name: c.archived_path for c in record.calibrations}
     if record.robot:
@@ -130,21 +146,22 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
                            for s in record.sensors],
         })
     for sensor in record.sensors:
+        sid = sensor.sensor_id
+        props = [_pv(f"#sensor-{sid}-topic", "topic", sensor.topic)]
+        if sensor.frame_id:
+            props.append(
+                _pv(f"#sensor-{sid}-frame_id", "frame_id", sensor.frame_id))
+        props.append(_pv(f"#sensor-{sid}-detected_at_start",
+                         "detected_at_start",
+                         str(sensor.detected_at_start).lower()))
         entity: dict = {
-            "@id": f"#sensor-{sensor.sensor_id}",
+            "@id": f"#sensor-{sid}",
             "@type": "sosa:Sensor",
             "name": sensor.make_model,
             "description": f"{sensor.type} publishing on {sensor.topic}",
             "sosa:isHostedBy": {"@id": "#robot"},
-            "additionalProperty": [
-                _prop("topic", sensor.topic),
-                _prop("detected_at_start",
-                      str(sensor.detected_at_start).lower()),
-            ],
+            "additionalProperty": props,
         }
-        if sensor.frame_id:
-            entity["additionalProperty"].insert(
-                1, _prop("frame_id", sensor.frame_id))
         archived = cal_paths.get(sensor.calibration_ref or "")
         if archived:
             entity["subjectOf"] = {"@id": archived}
@@ -167,7 +184,7 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
         "agent": {"@id": "#operator"},
         "location": {"@id": "#place"},
         "result": {"@id": "./"},
-        "additionalProperty": _CONFIDENCE_USER,
+        "additionalProperty": _confidence_user(),
     }
     if instruments:
         mission["instrument"] = instruments
@@ -186,16 +203,16 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
                       "url": "https://ros.org"})
     if record.software.python_env:
         pe = record.software.python_env
-        py_entity = {"@id": "#python-runtime",
-                     "@type": "SoftwareApplication",
-                     "name": "Python",
-                     "version": pe.version,
-                     "additionalProperty": [_prop("executable",
-                                                  pe.executable)]}
+        py_props = [_pv("#python-runtime-executable", "executable",
+                        pe.executable)]
         if pe.venv_path:
-            py_entity["additionalProperty"].append(
-                _prop("venv_path", pe.venv_path))
-        graph.append(py_entity)
+            py_props.append(_pv("#python-runtime-venv_path", "venv_path",
+                                pe.venv_path))
+        graph.append({"@id": "#python-runtime",
+                      "@type": "SoftwareApplication",
+                      "name": "Python",
+                      "version": pe.version,
+                      "additionalProperty": py_props})
     for container in record.software.docker_containers:
         entity = {"@id": f"#container-{container.name}",
                   "@type": "SoftwareApplication",
@@ -217,9 +234,9 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
             "encodingFormat": _ENCODING.get(bag.storage_format,
                                             "application/octet-stream"),
             "variableMeasured": [
-                {"@type": "PropertyValue", "name": t.name,
-                 "description": t.type, "value": t.message_count}
-                for t in bag.topics],
+                _pv(f"#bag{i}-measure-{j}", t.name, t.message_count,
+                    description=t.type)
+                for j, t in enumerate(bag.topics, start=1)],
         }
         comments = [w.plain_text for w in bag.health_warnings]
         if len(comments) == 1:
@@ -229,6 +246,7 @@ def build(record: MissionRecord, extra_files: list[dict] | None = None,
         graph.append(entity)
 
     graph.extend(file_entities)
+    graph.extend(pv_entities)
 
     return {
         "@context": [
