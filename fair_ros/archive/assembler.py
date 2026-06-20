@@ -92,6 +92,25 @@ def _render_readme(record: MissionRecord, warnings: list[str]) -> str:
     ]
     if record.intent.notes:
         lines += ["", f"**Notes:** {record.intent.notes}"]
+    if record.hardware_devices:
+        devices = record.hardware_devices
+        with_serial = [d for d in devices if d.serial_number]
+        named = []
+        for d in devices:
+            label = d.product_name or d.vendor_name
+            if label and label not in named:
+                named.append(label)
+        lines += ["", "## Connected hardware", "",
+                  f"- {len(devices)} device(s) were detected when the mission "
+                  "started; the full list is in mission_record.json."]
+        if named:
+            shown = ", ".join(named[:8])
+            more = f", and {len(named) - 8} more" if len(named) > 8 else ""
+            lines += [f"- Recognised devices: {shown}{more}."]
+        if with_serial:
+            lines += [f"- {len(with_serial)} of these record a serial number. "
+                      "**Serial numbers can identify a specific physical unit** "
+                      "— consider this before sharing the archive."]
     all_warnings = warnings + [w.plain_text for b in record.bags
                                for w in b.health_warnings]
     if all_warnings:

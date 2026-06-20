@@ -1,5 +1,7 @@
 # fair-ros
 
+[![CI](https://github.com/gdl-res/ROS-FAIRy/actions/workflows/ci.yml/badge.svg)](https://github.com/gdl-res/ROS-FAIRy/actions/workflows/ci.yml)
+
 Make robotics field mission data **FAIR** (Findable, Accessible,
 Interoperable, Reusable) with zero friction for the operator.
 

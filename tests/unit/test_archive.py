@@ -127,7 +127,9 @@ def test_assemble_full_crate(fair_dirs):
         "rclpy==5.0.0\n"
     assert (final / "harvest" / "lsusb_verbose.txt").is_file()
     assert not (final / "harvest" / "dmesg_usb.txt").exists()
-    assert "Survey eelgrass beds" in (final / "README.md").read_text()
+    readme = (final / "README.md").read_text()
+    assert "Survey eelgrass beds" in readme
+    assert "## Connected hardware" in readme
     # manifest updated with crate-relative paths and hashes
     saved = json.loads((final / "mission_record.json").read_text())
     assert saved["bags"][0]["path"] == "bags/rosbag2_0"
@@ -208,6 +210,35 @@ def test_ro_crate_document(fair_dirs):
         "example/navstack@sha256:7be1"
     assert by_id["calibrations/gps0.yaml"]["sha256"]
     assert by_id["ro-crate-metadata.json"]["about"] == {"@id": "./"}
+
+
+def test_readme_flags_identifying_serials():
+    from datetime import datetime, timezone
+    from fair_ros.manifest.schema import (
+        MissionRecord, Identity, Intent, Software, Provenance, HardwareDevice)
+    rec = MissionRecord(
+        identity=Identity(mission_id="m-x",
+                          created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+                          operator_name="Jane"),
+        intent=Intent(goal="Survey", location_name="lab"),
+        software=Software(fair_ros_version="0.1.0"),
+        hardware_devices=[
+            HardwareDevice(source_command="lsusb", device_class="usb",
+                           product_name="u-blox ZED-F9P",
+                           serial_number="3C123"),
+            HardwareDevice(source_command="glob:/dev/video*",
+                           device_class="video", device_path="/dev/video0")],
+        provenance=Provenance(fair_ros_version="0.1.0", schema_version="1.0",
+                              hostname="h", kernel="Linux", arch="x86_64"))
+    md = assembler._render_readme(rec, [])
+    assert "## Connected hardware" in md
+    assert "u-blox ZED-F9P" in md
+    assert "1 of these record a serial number" in md
+    assert "Serial numbers can identify" in md
+
+    # no hardware → no section at all
+    rec.hardware_devices = []
+    assert "Connected hardware" not in assembler._render_readme(rec, [])
 
 
 def test_archive_name_collision(fair_dirs):
