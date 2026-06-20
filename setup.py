@@ -50,6 +50,7 @@ setup(
             "mission_status = fair_ros.subcommands.mission_status:"
             "MissionStatusVerb",
             "list = fair_ros.subcommands.list_missions:ListVerb",
+            "diff = fair_ros.subcommands.mission_diff:DiffVerb",
         ],
         "console_scripts": [
             "fair-ros-watchdog = fair_ros.watchdog.watchdog:main",

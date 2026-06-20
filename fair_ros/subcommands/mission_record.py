@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from fair_ros.harvest import robot_identity
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.utils import paths
 
 MIN_FREE_BYTES = 1 << 30  # 1 GiB
@@ -41,6 +41,7 @@ def _bag_prefix() -> str:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     if shutil.which("ros2") is None:
@@ -100,7 +101,9 @@ class MissionRecordVerb(VerbExtension):
     """Record mission data (wraps ros2 bag record with safety checks)."""
 
     def add_arguments(self, parser, cli_name):
-        pass
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
 
     def main(self, *, args):
         return run(args)

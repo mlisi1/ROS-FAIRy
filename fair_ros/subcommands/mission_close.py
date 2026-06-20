@@ -9,7 +9,7 @@ from rich.prompt import Confirm
 
 from fair_ros.archive import assembler
 from fair_ros.manifest import builder, validator
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui import briefing, review
 from fair_ros.utils import fsio, paths
 from fair_ros.watchdog import watchdog as wd
@@ -58,6 +58,7 @@ def _discard_spool() -> None:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     interrupted = assembler.find_interrupted_staging()
@@ -101,6 +102,16 @@ def run(args, console: Console | None = None) -> int:
                 context.setdefault(section, {})[field] = value
         fsio.atomic_write_json(paths.mission_context_path(), context)
 
+    existing_notes = (context.get("intent") or {}).get("notes")
+    note_arg = getattr(args, "note", None)
+    if note_arg is not None:
+        new_notes = note_arg.strip() or None
+    else:
+        new_notes = briefing.ask_notes(console, default=existing_notes)
+    if new_notes != existing_notes:
+        context.setdefault("intent", {})["notes"] = new_notes
+        fsio.atomic_write_json(paths.mission_context_path(), context)
+
     try:
         record = builder.build(harvest, context)
     except builder.ManifestError as exc:
@@ -142,7 +153,12 @@ class MissionCloseVerb(VerbExtension):
     """Review the finished mission and decide: save it or discard it."""
 
     def add_arguments(self, parser, cli_name):
-        pass
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
+        parser.add_argument(
+            "--note", metavar="TEXT",
+            help="post-mission notes (skips the interactive prompt)")
 
     def main(self, *, args):
         return run(args)

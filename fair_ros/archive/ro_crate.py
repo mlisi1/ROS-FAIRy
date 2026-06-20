@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fair_ros.manifest.schema import MissionRecord
 
-FAIR_ROS_ID = "https://github.com/example/fair-ros"
+FAIR_ROS_ID = "https://github.com/gdl-res/ROS-FAIRy"
 
 _ENCODING = {
     "sqlite3": "application/x-sqlite3",

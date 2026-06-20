@@ -18,7 +18,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.utils import paths
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -208,6 +208,7 @@ def install_service(console: Console) -> bool:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     if os.geteuid() != 0:
@@ -256,7 +257,9 @@ class SetupVerb(VerbExtension):
     """One-time robot setup: identity file, directories, watchdog service."""
 
     def add_arguments(self, parser, cli_name):
-        pass
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
 
     def main(self, *, args):
         return run(args)

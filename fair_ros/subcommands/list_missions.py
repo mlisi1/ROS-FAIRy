@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.table import Table
 
 from fair_ros.archive import index
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui.review import human_size
 from fair_ros.utils import paths
 from fair_ros.utils.topic_health import humanize_duration
@@ -21,6 +21,7 @@ def _fmt_date(iso: str) -> str:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     if not paths.index_db_path().is_file():
@@ -74,6 +75,8 @@ class ListVerb(VerbExtension):
     """List the missions saved on this robot."""
 
     def add_arguments(self, parser, cli_name):
+        parser.add_argument("--debug", action="store_true",
+                            help="verbose logging to stderr (for engineers)")
         parser.add_argument("--operator", help="filter by operator name")
         parser.add_argument("--location", help="filter by location")
         parser.add_argument("--since", metavar="YYYY-MM-DD",

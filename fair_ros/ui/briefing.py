@@ -60,3 +60,16 @@ def ask_missing(fields: list[str], console: Console | None = None) -> dict:
         prompt, required = by_field[field]
         answers[field] = _ask_one(console, field, prompt, required, None)
     return answers
+
+
+def ask_notes(console: Console | None = None,
+              default: str | None = None) -> str | None:
+    """Ask Q5 (notes) standalone — used at mission_close for post-mission annotation.
+
+    Existing notes are offered as the default so the operator can keep or
+    replace them. Returns None when the operator presses Enter with no input
+    and no default.
+    """
+    console = console or Console()
+    _, prompt, _ = next(q for q in QUESTIONS if q[0] == "notes")
+    return _ask_one(console, "notes", prompt, False, default)
