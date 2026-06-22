@@ -15,9 +15,10 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fair_ros.manifest import builder
 from fair_ros.utils import fsio, paths, topic_health
@@ -53,9 +54,15 @@ def run_pipeline() -> dict[str, Any]:
 
     Returns the composed harvest.json document (without bags).
     """
-    from fair_ros.harvest import (docker_info, hardware_devices, python_env,
-                                  robot_identity, ros_descriptions, ros_graph,
-                                  system_info)
+    from fair_ros.harvest import (
+        docker_info,
+        hardware_devices,
+        python_env,
+        robot_identity,
+        ros_descriptions,
+        ros_graph,
+        system_info,
+    )
 
     status: dict[str, str] = {}
     results: dict[str, Any] = {}

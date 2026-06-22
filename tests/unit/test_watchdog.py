@@ -137,7 +137,7 @@ def test_full_cycle(rig):
 
 def test_inactivity_finalises_crashed_bag(rig):
     ino, clock, dog = rig
-    bag = _record_bag(rig, with_metadata=False)
+    _record_bag(rig, with_metadata=False)
     assert dog.state == RECORDING
 
     clock.now += wd_mod.BAG_INACTIVITY_S + 1
