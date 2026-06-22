@@ -1,22 +1,28 @@
+import importlib.util
 import io
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 from rich.console import Console
 
 from fair_ros.manifest import builder
 from fair_ros.subcommands import (
+    doctor,
+    export,
     list_missions,
     mission_close,
     mission_diff,
     mission_record,
     mission_start,
     mission_status,
+    repair,
 )
 from fair_ros.subcommands import setup as setup_cmd
-from fair_ros.utils import fsio, paths
+from fair_ros.utils import clock, fsio, paths
 from tests.unit.test_archive import _spool
 
 
@@ -61,6 +67,33 @@ def test_mission_record_requires_ros2(fair_dirs):
                            return_value=None):
         assert mission_record.run(ARGS, console=console) == 1
     assert "can't find ROS 2" in console.file.getvalue()
+
+
+def test_clock_is_synchronized_parsing():
+    def result(val):
+        return SimpleNamespace(returncode=0, stdout=val + "\n")
+    with mock.patch.object(clock.subprocess, "run", return_value=result("yes")):
+        assert clock.is_synchronized() is True
+    with mock.patch.object(clock.subprocess, "run", return_value=result("no")):
+        assert clock.is_synchronized() is False
+    with mock.patch.object(clock.subprocess, "run",
+                           side_effect=FileNotFoundError):
+        assert clock.is_synchronized() is None
+
+
+def test_mission_record_aborts_on_unsynced_clock(fair_dirs):
+    _spool(fair_dirs)  # a mission context, so the briefing prompt is skipped
+    console = _console()
+    with mock.patch.object(mission_record.shutil, "which",
+                           return_value="/usr/bin/ros2"), \
+         mock.patch.object(mission_record.clock, "is_synchronized",
+                           return_value=False), \
+         mock.patch.object(mission_record.Confirm, "ask",
+                           return_value=False) as ask, \
+         mock.patch.object(mission_record.subprocess, "Popen") as popen:
+        assert mission_record.run(ARGS, console=console) == 0
+    ask.assert_called_once()          # the clock prompt
+    popen.assert_not_called()         # recording never started
 
 
 def test_build_record_command_default(fair_dirs):
@@ -258,6 +291,244 @@ def test_setup_ask_robot_validates_email(fair_dirs):
                            side_effect=lambda *a, **k: next(answers)):
         config = setup_cmd.ask_robot(_console(), {})
     assert config["owner"]["contact_email"] == "fleet@example.org"
+
+
+# --- repair ------------------------------------------------------------------
+
+_MCAP = importlib.util.find_spec("mcap") is not None
+
+
+@pytest.mark.skipif(not _MCAP, reason="mcap package not installed")
+def test_repair_command_on_single_bad_bag(tmp_path):
+    from tests.conftest import make_mcap_bag
+    bad = make_mcap_bag(tmp_path / "rosbag2_bad",
+                        {"/data": [float(i) for i in range(1, 31)]
+                         + [1_750_000_000.0 + i * 0.5 for i in range(11)]})
+    out = tmp_path / "out"
+    args = SimpleNamespace(mission=str(bad), output=str(out), all=False,
+                           duration=10.0, force=False, json=False)
+    assert repair.run(args, console=_console()) == 0
+    fixed = out / bad.name
+    assert (fixed / "metadata.yaml").is_file() and list(fixed.glob("*.mcap"))
+
+
+@pytest.mark.skipif(not _MCAP, reason="mcap package not installed")
+def test_repair_command_skips_healthy_bag(tmp_path):
+    from tests.conftest import make_mcap_bag
+    good = make_mcap_bag(tmp_path / "rosbag2_ok",
+                         {"/data": [1_750_000_000.0 + i * 0.1 for i in range(50)]})
+    out = tmp_path / "out"
+    console = _console()
+    args = SimpleNamespace(mission=str(good), output=str(out), all=False,
+                           duration=None, force=False, json=False)
+    assert repair.run(args, console=console) == 0
+    assert "nothing to repair" in console.file.getvalue()
+    assert not out.exists()
+
+
+def test_repair_command_unknown_target(fair_dirs):
+    args = SimpleNamespace(mission="nope", output=None, all=False,
+                           duration=None, force=False, json=False)
+    assert repair.run(args, console=_console()) == 1
+
+
+# --- data quality / degradation gate -----------------------------------------
+
+def test_quality_ok_for_healthy_mission(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    assert quality.assess(record, harvest).level == quality.OK
+
+
+def test_quality_poor_without_ros_context(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    harvest["ros_graph"]["nodes"] = []
+    harvest["provenance"]["harvest_status"]["ros_graph"] = "failed"
+    record = builder.build(harvest, context)
+    q = quality.assess(record, harvest)
+    assert q.level == quality.POOR and any("software" in r for r in q.reasons)
+
+
+def test_quality_poor_when_all_bags_unusable(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    for b in record.bags:
+        b.duration_s = None
+    assert quality.assess(record, harvest).level == quality.POOR
+
+
+def test_quality_degraded_when_sensor_not_detected(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    for s in record.sensors:
+        s.detected_at_start = False
+    assert quality.assess(record, harvest).level == quality.DEGRADED
+
+
+def test_mission_close_gates_poor_mission(fair_dirs):
+    # Spool harvest looks like no ROS context was captured -> poor.
+    harvest, _ = _spool(fair_dirs)
+    harvest["ros_graph"]["nodes"] = []
+    harvest["provenance"]["harvest_status"]["ros_graph"] = "failed"
+    fsio.atomic_write_json(paths.harvest_json_path(), harvest)
+
+    captured = {}
+
+    def fake_confirm(console=None, *, risky=False):
+        captured["risky"] = risky
+        return "keep"
+
+    with mock.patch.object(mission_close.review, "confirm_save", fake_confirm):
+        assert mission_close.run(ARGS, console=_console()) == 0
+    assert captured["risky"] is True
+
+
+def test_mission_close_warns_on_likely_duplicate(fair_dirs):
+    from fair_ros.archive import assembler
+
+    # 1) Save a "Crosslab" mission.
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    # 2) Spool a new mission with the place mistyped "Crossloab".
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crossloab"
+    fsio.atomic_write_json(paths.mission_context_path(), context2)
+
+    console = _console()
+    with mock.patch.object(mission_close.review, "confirm_save",
+                           return_value="keep"):
+        assert mission_close.run(ARGS, console=console) == 0
+    assert "Possible duplicate" in console.file.getvalue()
+
+
+def test_mission_close_does_not_gate_healthy_mission(fair_dirs):
+    _spool(fair_dirs)
+    captured = {}
+
+    def fake_confirm(console=None, *, risky=False):
+        captured["risky"] = risky
+        return "keep"
+
+    with mock.patch.object(mission_close.review, "confirm_save", fake_confirm):
+        assert mission_close.run(ARGS, console=_console()) == 0
+    assert captured["risky"] is False
+
+
+# --- export ------------------------------------------------------------------
+
+def _make_archive(fair_dirs):
+    from fair_ros.archive import assembler
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    return assembler.assemble(record, harvest)
+
+
+def test_export_creates_zip_and_checksum(fair_dirs, tmp_path):
+    import zipfile
+    crate = _make_archive(fair_dirs)
+    out = tmp_path / "share"
+    out.mkdir()  # an existing directory is treated as the output folder
+    args = SimpleNamespace(mission=str(crate), output=str(out), format="zip",
+                           force=False, json=False)
+    assert export.run(args, console=_console()) == 0
+
+    bundle = out / f"{crate.name}.zip"
+    sidecar = out / f"{crate.name}.zip.sha256"
+    assert bundle.is_file() and sidecar.is_file()
+    # checksum sidecar is correct and sha256sum-compatible
+    digest, name = sidecar.read_text().split()
+    assert digest == fsio.sha256_file(bundle) and name == bundle.name
+    # bundle has a top-level crate folder
+    with zipfile.ZipFile(bundle) as zf:
+        names = zf.namelist()
+    assert f"{crate.name}/mission_record.json" in names
+
+
+def test_export_refuses_existing_without_force(fair_dirs, tmp_path):
+    crate = _make_archive(fair_dirs)
+    dest = tmp_path / "m.zip"
+    dest.write_text("old")
+    base = dict(mission=str(crate), output=str(dest), format="zip", json=False)
+    assert export.run(SimpleNamespace(**base, force=False),
+                      console=_console()) == 1
+    assert export.run(SimpleNamespace(**base, force=True),
+                      console=_console()) == 0
+    assert dest.read_bytes()[:2] == b"PK"  # overwritten with a real zip
+
+
+def test_export_json(fair_dirs, tmp_path, capsys):
+    crate = _make_archive(fair_dirs)
+    args = SimpleNamespace(mission=str(crate), output=str(tmp_path),
+                           format="zip", force=False, json=True)
+    assert export.run(args) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["sha256"] == fsio.sha256_file(Path(data["bundle"]))
+    assert data["mission_id"] and data["verify_result"] in ("ok", "warn", "fail")
+
+
+def test_export_unknown_mission(fair_dirs):
+    args = SimpleNamespace(mission="does-not-exist", output=None, format="zip",
+                           force=False, json=False)
+    assert export.run(args, console=_console()) == 1
+
+
+# --- doctor ------------------------------------------------------------------
+
+def test_doctor_check_clock(monkeypatch):
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: False)
+    assert doctor._check_clock()["status"] == doctor.FAIL
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: True)
+    assert doctor._check_clock()["status"] == doctor.OK
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: None)
+    assert doctor._check_clock()["status"] == doctor.SKIP
+
+
+def test_doctor_service_harvest_distinguishes_service_context():
+    from fair_ros.watchdog import watchdog as wd
+    with mock.patch.object(wd, "read_state",
+                           return_value={"harvest_status": {"ros_graph": "ok"}}):
+        assert doctor._check_service_harvest()["status"] == doctor.OK
+    with mock.patch.object(
+            wd, "read_state",
+            return_value={"harvest_status": {"ros_graph": "failed"}}):
+        c = doctor._check_service_harvest()
+        assert c["status"] == doctor.FAIL and "ros2 fair setup" in c["hint"]
+    with mock.patch.object(wd, "read_state", return_value=None):
+        assert doctor._check_service_harvest()["status"] == doctor.SKIP
+
+
+def test_doctor_check_that_raises_becomes_fail():
+    def boom():
+        raise RuntimeError("nope")
+    with mock.patch.object(doctor, "_CHECKS", (boom,)):
+        results = doctor.diagnose()
+    assert results[0]["status"] == doctor.FAIL
+    assert "nope" in results[0]["detail"]
+
+
+def test_doctor_run_not_ready_exit_and_json(capsys):
+    fake = [{"status": doctor.OK, "title": "a", "detail": "", "hint": ""},
+            {"status": doctor.FAIL, "title": "b", "detail": "d", "hint": "h"}]
+    with mock.patch.object(doctor, "diagnose", return_value=fake):
+        rc = doctor.run(SimpleNamespace(json=True))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert data["result"] == "fail" and len(data["checks"]) == 2
+
+
+def test_doctor_run_ready():
+    fake = [{"status": doctor.OK, "title": "a", "detail": "", "hint": ""}]
+    console = _console()
+    with mock.patch.object(doctor, "diagnose", return_value=fake):
+        rc = doctor.run(ARGS, console=console)
+    assert rc == 0
+    assert "READY" in console.file.getvalue()
 
 
 def test_setup_captures_ros_environment(fair_dirs):

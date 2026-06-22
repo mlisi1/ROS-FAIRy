@@ -64,6 +64,8 @@ Preflight:
 - Existing `mission_context.json` in spool → "There's already an unfinished
   mission from <date> by <operator>. Start a new one and replace it? [y/N]".
   No = exit 0 untouched.
+- System clock not NTP-synchronised → print a non-blocking warning (the
+  briefing doesn't record, so it never prompts; `mission_record` enforces it).
 
 Questions (exactly these five, in this order):
 
@@ -94,6 +96,12 @@ Preflight:
   mission. Continue? [Y/n]".
 - Watchdog not active → warn (recording still proceeds; context can be
   harvested late by the retry rule, but the warning is honest about it).
+- System clock not NTP-synchronised (`utils/clock.is_synchronized()` is
+  `False`) → warn and require explicit confirm. An unsynced clock stamps
+  messages near the epoch, producing bags that `ros2 bag play` can't replay and
+  that are useless for time-critical processing; better to catch it before
+  recording than to flag the dead bag afterwards. Unknown sync state (no
+  `timedatectl`) does not nag.
 
 Subprocess (exact):
 
@@ -131,15 +139,32 @@ The single save/discard decision.
    ask the corresponding `mission_start` questions inline, same wording.
 3. **Validate** via `manifest/validator.py`. Remaining failures print one
    plain-language line each and exit 1.
-4. **Summary panel** (rich), in order:
+4. **Grade** the built record with `manifest/quality.assess` → `ok` /
+   `degraded` / `poor`, stored in `provenance.data_quality`. `poor` means core
+   content is missing (no ROS context captured, or all recordings have an
+   unusable clock); `degraded` means usable with gaps (some sensors, some
+   recordings).
+5. **Summary panel** (rich), in order:
+   - When not `ok`: a coloured **Data quality** header (INCOMPLETE / POOR) and
+     its plain-language reasons; the panel border turns yellow/red.
+   - **Possible duplicate** (if any): a non-blocking note when the same operator
+     saved a mission at a very similar location within the last 24 h
+     (`archive/duplicates.py`, fuzzy match — catches typos like
+     "Crosslab"/"Crossloab"). Informational; repeat missions are legitimate.
    - Mission title line: goal, location, date.
    - Operator and robot names.
-   - Recording: bag count, total duration ("42 minutes"), total size ("3.1 GB").
+   - Recording: bag count, total duration ("42 minutes" or "length unknown"),
+     total size ("3.1 GB").
    - Sensors: one line per declared sensor with ✓ or a warning glyph.
    - **Warnings**, each as its pre-rendered `plain_text` from `health_warnings`,
      plus harvest-level warnings ("I couldn't capture the software versions
      because ROS wasn't reachable", "This robot hasn't been set up yet…").
-5. **Decision** — "Save this mission? [Y/n]"
+6. **Decision**:
+   - Normal mission — "Save this mission? [Y/n]" (default Yes).
+   - `poor` mission — the save prompt instead defaults to **No** and is worded as
+     a caution ("This recording is missing important data (see above). Save it
+     anyway? [y/N]"), so a near-empty recording can't be archived by reflexively
+     pressing Enter.
    - **Yes** → call `archive/assembler.py` with a rich progress bar (bags can be
      gigabytes). On success: "Mission saved: <archive dir name>". Spool is now
      empty. Exit 0.
@@ -147,11 +172,15 @@ The single save/discard decision.
      - Yes → delete spool contents, "Recording discarded." Exit 0.
      - No → "Nothing was changed — the recording is still in the spool." Exit 0
        (the operator can rerun mission_close later).
-6. Assembly failure → spool left intact, plain-language error naming the cause
+7. Assembly failure → spool left intact, plain-language error naming the cause
    (disk full, permissions), exit 1. Never half-archived (see `specs/archive.md`).
 
+`data_quality` is also written to the SQLite index, so `ros2 fair list` flags
+degraded/poor missions and `--json` exposes the field.
+
 Warning-generation logic lives in `topic_health.py` (per-bag) and `builder.py`
-(harvest-level); `ui/review.py` only renders pre-built strings.
+(harvest-level); the quality verdict in `manifest/quality.py`; `ui/review.py`
+only renders pre-built strings.
 
 ---
 
@@ -193,10 +222,13 @@ Default output: rich table, newest first.
 | Duration | humanised from `duration_s` |
 | Size | humanised from `size_bytes` |
 | ⚠ | `warning_count` (blank when 0) |
+| Data | `data_quality`: blank for `ok`/unset, `partial` (yellow) for `degraded`, `poor` (red) |
 
 Options:
 - `--operator <text>`, `--location <text>` — case-insensitive substring filters.
 - `--since <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`.
+- `--quality {ok,degraded,poor}` — only missions with that data-quality verdict
+  (e.g. `--quality poor` to find the ones that need attention).
 - `--limit <n>` — default 20; footer line "Showing 20 of 134 missions" when
   truncated.
 - `--path` — adds the archive path column (for engineers copying data off).
@@ -262,3 +294,123 @@ Bag bytes are pinned at archive time: the assembler records a sha256 for every
 file in each bag (`Bag.file_sha256`), so verify detects byte-level modification,
 not just missing files. Archives written before 1.0 have no bag checksums and
 fall back to the structural check (reported with a `!`).
+
+---
+
+## `ros2 fair doctor`
+
+Preflight readiness self-check, run before a mission. Where `verify` asks "is
+this *saved archive* still intact?", `doctor` asks "is this *robot* ready to
+capture a good mission *right now*?" — catching the failure modes that otherwise
+only surface as an empty or unusable archive afterwards. Read-only; takes no
+mission argument.
+
+Runs these checks, each a plain-language ✓/!/✗/– line (with a `→ hint` under any
+✗/!) in one panel:
+
+| Check | Status on problem |
+|---|---|
+| robot identity file present and valid (`harvest/robot_identity`) | ✗ fail |
+| recording assistant (watchdog) running, heartbeat fresh | ✗ fail (! if stale) |
+| ROS 2 reachable from **this shell** (`ros2 node list` non-empty) | ✗ fail (! if reachable but no nodes) |
+| ROS environment sourced here (`ROS_DISTRO` set; reports rmw/domain) | ! warn |
+| the **watchdog's own** last graph harvest succeeded (service-context truth — the empty-archive failure) | ✗ fail (– if it hasn't harvested yet) |
+| system clock NTP-synchronised (`utils/clock`) | ✗ fail (– if undeterminable) |
+| `mcap` available for bag timing/health | ! warn |
+| spool free space ≥ 1 GiB | ✗ fail |
+| Docker reachable | – skip (optional) |
+
+The service-harvest check is the one that distinguishes "ROS works in my shell"
+from "the background service can actually see ROS" — the exact gap that produced
+empty archives on the real robot.
+
+Overall result: **READY** (no ✗/!), **READY (with warnings)** (some ! but no ✗),
+or **NOT READY** (any ✗). A failing check (`✗`) makes the exit code `1`; warnings
+and skips do not. Each check that raises unexpectedly is itself reported as a ✗
+rather than crashing the command.
+
+Options:
+- `--json` — emits `{"result": "ok|warn|fail", "checks": [{"status", "title",
+  "detail", "hint"}, …]}` to stdout.
+
+---
+
+## `ros2 fair export [<mission>]`
+
+Packages a saved mission archive (an RO-Crate *directory*) into a single
+portable file for sharing or deposit — replacing the operator's manual hand-zip.
+The mission argument is resolved the same way as `diff`/`verify` (number, archive
+path, or mission ID); no argument exports the most recent mission. Read-only with
+respect to the archive and index.
+
+Behaviour:
+- Bundles the whole crate under a top-level folder named after the archive (so
+  unpacking yields `<name>/ro-crate-metadata.json`, …).
+- Default format `zip`; `--format tar` writes a `.tar`. Both are **stored
+  uncompressed** — bag data (MCAP, images) is already compressed, so deflating
+  multi-GB recordings only costs CPU. ZIP64 is enabled for large bags.
+- Written atomically (`<dest>.part` then renamed); on any error the partial file
+  is removed and nothing is left behind.
+- Refuses to overwrite an existing output unless `--force`.
+- Writes a `sha256sum`-compatible sidecar `<dest>.sha256` (`"<sha256>  <name>"`)
+  so the recipient can prove the transfer with `sha256sum -c`. Internal
+  per-file integrity is still checkable with `ros2 fair verify` after unpacking.
+- Runs `verify` on the source first; if it fails, prints a warning but still
+  exports (the operator asked, and a flawed copy can be worth shipping).
+- Shows a transient byte-progress bar while packaging.
+
+Output location (`--output`/`-o`): a file path is used verbatim; a directory (or
+a trailing `/`) writes `<name>.<ext>` into it; default is the current directory.
+
+Exit code `0` on success, `1` on a resolve/verify-load error, an existing output
+without `--force`, or a write failure.
+
+Options:
+- `--output`, `-o` — output file or directory.
+- `--format {zip,tar}` — bundle format (default `zip`).
+- `--force` — overwrite an existing output file.
+- `--json` — emits `{"mission_id", "source", "bundle", "format", "size_bytes",
+  "sha256", "checksum_file", "verify_result"}` to stdout (`verify_result` is
+  `ok|warn|fail|unknown`; `unknown` if the integrity check couldn't run).
+
+---
+
+## `ros2 fair repair [<mission>]`
+
+Makes a saved mission's **unplayable** recordings playable again. A bag recorded
+with an unsynchronised clock has most messages stamped near the epoch (1970), so
+`ros2 bag play` honours the resulting ~56-year timeline and stalls. This writes a
+re-stamped, immediately-playable **copy** of each affected recording — the
+original archive is never touched, so its `file_sha256` checksums and `verify`
+result still hold.
+
+The argument is a mission (number / archive path / mission ID, like `verify`) or
+a path to a single bag directory; no argument repairs the most recent mission.
+
+Behaviour:
+- For each recording, decides via `utils/bag_repair.needs_repair` (re-derived
+  from the message timestamps) whether the clock is unrecoverable. Healthy
+  recordings are left alone and reported as "already playable"; `--all`
+  re-stamps every recording regardless.
+- Writes each repaired recording as `<output>/<bag-name>/` containing a
+  re-stamped MCAP **and a regenerated `metadata.yaml`** (topic types/QoS reused
+  from the source, only timing and the storage file fixed), so the result plays
+  directly — no `ros2 bag reindex` needed.
+- Output goes to `--output`/`-o` (default `./<name>_repaired/`); refuses a
+  non-empty output directory unless `--force`.
+- Only MCAP bags can be repaired; other formats are reported as skipped.
+
+**The repaired timing is synthetic** (messages keep their original order, types
+and bytes; inter-message spacing is spread evenly over `--duration`, default the
+span of the few real stamps else 60 s). Good for inspection and playback; not
+for time-critical processing. The only real fix is to sync the clock before
+recording — see `docs/recovering-bad-clock-bags.md`. Exit code `0` (including
+when nothing needed repair), `1` only on a bad target.
+
+Options:
+- `--output`, `-o` — directory for repaired recordings.
+- `--all` — re-stamp every recording, not only the bad-clock ones.
+- `--duration SECONDS` — target playback length per repaired recording.
+- `--force` — write into a non-empty output directory.
+- `--json` — emits `{"target", "output", "repaired", "bags": [{"bag", "status",
+  …}]}` to stdout.

@@ -243,6 +243,7 @@ assembler — never into the manifest.
 | `arch` | `str` | yes | auto | system_info (`uname -m`) | |
 | `field_confidence` | `dict[str, str]` | yes | auto | builder | Flat map of dotted field path → `"auto"` \| `"user"`, e.g. `"intent.goal": "user"`. Covers every populated leaf field. This is the single machine-readable source of confidence tags. |
 | `harvest_status` | `dict[str, str]` | yes | auto | watchdog | Per harvest module: `ok`, `failed`, `skipped`, `timeout`, or `partial`. Module keys: `robot_identity`, `system_info`, `python_env`, `hardware_devices`, `ros_graph`, `ros_descriptions`, `docker_info`. `partial` (used by `python_env` and `hardware_devices`) means some sub-commands succeeded and others were missing, timed out, or permission-denied. The canonical key list is `manifest/builder.HARVEST_MODULES`. |
+| `data_quality` | `str \| None` | no | auto | `manifest/quality` (at close) | Overall verdict: `ok`, `degraded`, or `poor`. Set by `mission_close`, gates the save decision, and is mirrored into the SQLite index. `None` for records written before 1.0. |
 
 ---
 

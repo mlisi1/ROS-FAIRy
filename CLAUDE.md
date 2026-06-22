@@ -66,6 +66,9 @@ fair-ros/
 │   │   ├── mission_status.py
 │   │   ├── mission_diff.py          ← compare two missions (ros2 fair diff)
 │   │   ├── verify.py                ← integrity-check a saved archive (ros2 fair verify)
+│   │   ├── doctor.py                ← preflight readiness self-check (ros2 fair doctor)
+│   │   ├── export.py                ← package a mission into one portable file (ros2 fair export)
+│   │   ├── repair.py                ← re-stamp bad-clock bags so they play (ros2 fair repair)
 │   │   └── list_missions.py
 │   ├── harvest/                     ← auto-discovery subsystem
 │   │   ├── ros_graph.py             ← nodes, topics, params via subprocess
@@ -81,10 +84,12 @@ fair-ros/
 │   ├── manifest/
 │   │   ├── builder.py               ← merges harvest + user input → manifest
 │   │   ├── validator.py             ← checks required fields are present
+│   │   ├── quality.py               ← data-quality verdict (ok/degraded/poor)
 │   │   └── schema.py                ← Pydantic models for all record types
 │   ├── archive/
 │   │   ├── assembler.py             ← builds RO-Crate directory structure
 │   │   ├── ro_crate.py              ← writes ro-crate-metadata.json (JSON-LD)
+│   │   ├── duplicates.py            ← near-duplicate mission detection (close-time nudge)
 │   │   └── index.py                 ← SQLite mission index (read/write)
 │   ├── ui/
 │   │   ├── briefing.py              ← interactive mission_start wizard (rich TUI)
@@ -96,7 +101,11 @@ fair-ros/
 │       ├── fsio.py                  ← atomic JSON writes, directory sizing
 │       ├── bag_storage.py           ← pluggable rosbag2 storage readers (sqlite3 + mcap)
 │       ├── ros_distro.py            ← distro detection + per-distro capabilities (default storage)
-│       └── topic_health.py          ← gap detection on topic timestamps
+│       ├── clock.py                 ← system clock NTP-sync check (pre-record guardrail)
+│       ├── bag_repair.py            ← re-stamp an unsynced-clock bag into a playable copy
+│       └── topic_health.py          ← gap detection + recording-window recovery
+├── tools/
+│   └── restamp_bag.py               ← bare-machine wrapper over utils/bag_repair
 ├── systemd/
 │   └── fair-ros-watchdog.service
 ├── tests/
@@ -200,21 +209,40 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
 - `verify.py` — re-checks a saved archive (schema, RO-Crate JSON-LD, referenced
   files present, bag data files present, calibration checksums, index entry);
   read-only, plain-language PASS/FAIL
-  (`mission_status`, `list`, `diff`, and `verify` accept `--json` for scripts)
+- `doctor.py` — preflight readiness self-check run before a mission: robot
+  identity, watchdog liveness, ROS reachable (this shell *and* the service's
+  last harvest), ROS env sourced, clock sync, mcap, disk, docker; read-only,
+  plain-language READY / NOT READY, exit 1 on any failure
+- `export.py` — package a saved mission crate into one portable `.zip`/`.tar`
+  (top-level folder, stored/uncompressed) with a `sha256sum`-compatible sidecar;
+  warns if the source fails `verify`; refuses to clobber without `--force`
+- `repair.py` — write playable copies of a mission's bad-clock recordings via
+  `utils/bag_repair` (re-stamped, regenerated `metadata.yaml`, no manual
+  reindex); non-destructive (originals untouched); accepts a mission or a single
+  bag dir
+  (`mission_status`, `list`, `diff`, `verify`, `doctor`, `export`, and `repair`
+  accept `--json`)
 
 ### Manifest Builder (`manifest/`)
 - `builder.py` merges `harvest.json` + `mission_context.json` → `MissionRecord`
 - All Pydantic models in `schema.py`; validation in `validator.py`
 - Missing required fields cause a clear, plain-language error — never a traceback
+- `quality.py` grades a finished record `ok`/`degraded`/`poor` (no ROS context,
+  unusable bag clock, etc.); `mission_close` shows the verdict, makes a `poor`
+  save deliberate (default No), and stores it in `provenance.data_quality` and
+  the index so degraded missions are findable in `ros2 fair list`
 
 ### Archive (`archive/`)
 - `assembler.py` creates the RO-Crate directory under `/var/fair-ros/archive/`
-- Directory name format: `YYYY-MM-DD_<sanitised-location>_<operator>/`
+- Directory name format: `YYYY-MM-DD_HH-MM-SS_<sanitised-location>_<operator>/`
 - `ro_crate.py` writes `ro-crate-metadata.json` as JSON-LD aligned to:
   - RO-Crate 1.1 spec
   - schema.org/Dataset
   - W3C SSN/SOSA for sensor descriptions
 - `index.py` inserts a row into SQLite after successful archive
+- `duplicates.py` flags a recently-saved mission by the same operator at a very
+  similar location (fuzzy match, e.g. "Crosslab"/"Crossloab"); `mission_close`
+  surfaces it as a non-blocking "Possible duplicate" note before the save
 
 ---
 
@@ -241,6 +269,9 @@ Subcommands register under:
         'list = fair_ros.subcommands.list_missions:ListVerb',
         'diff = fair_ros.subcommands.mission_diff:DiffVerb',
         'verify = fair_ros.subcommands.verify:VerifyVerb',
+        'doctor = fair_ros.subcommands.doctor:DoctorVerb',
+        'export = fair_ros.subcommands.export:ExportVerb',
+        'repair = fair_ros.subcommands.repair:RepairVerb',
     ],
 ```
 

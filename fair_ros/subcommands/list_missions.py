@@ -21,6 +21,16 @@ def _fmt_date(iso: str) -> str:
         return iso
 
 
+_QUALITY_CELL = {
+    "degraded": "[yellow]partial[/yellow]",
+    "poor": "[red]poor[/red]",
+}
+
+
+def _quality_cell(value: str | None) -> str:
+    return _QUALITY_CELL.get(value or "", "")
+
+
 def run(args, console: Console | None = None) -> int:
     _configure_logging(getattr(args, "debug", False))
     console = console or Console()
@@ -39,6 +49,7 @@ def run(args, console: Console | None = None) -> int:
         location=getattr(args, "location", None),
         since=getattr(args, "since", None),
         until=getattr(args, "until", None),
+        quality=getattr(args, "quality", None),
         limit=getattr(args, "limit", 20) or 20)
 
     if as_json:
@@ -60,6 +71,7 @@ def run(args, console: Console | None = None) -> int:
     table.add_column("Duration", justify="right")
     table.add_column("Size", justify="right")
     table.add_column("⚠", justify="right")
+    table.add_column("Data")
     if show_path:
         table.add_column("Path")
     for row in rows:
@@ -74,6 +86,7 @@ def run(args, console: Console | None = None) -> int:
             humanize_duration(row["duration_s"]) if row["duration_s"] else "",
             human_size(row["size_bytes"]) if row["size_bytes"] else "",
             str(row["warning_count"]) if row["warning_count"] else "",
+            _quality_cell(row.get("data_quality")),
         ]
         if show_path:
             cells.append(row["archive_path"])
@@ -96,6 +109,8 @@ class ListVerb(VerbExtension):
                             help="only missions on or after this date")
         parser.add_argument("--until", metavar="YYYY-MM-DD",
                             help="only missions up to this date")
+        parser.add_argument("--quality", choices=["ok", "degraded", "poor"],
+                            help="only missions with this data-quality verdict")
         parser.add_argument("--limit", type=int, default=20,
                             help="maximum rows to show (default 20)")
         parser.add_argument("--path", action="store_true",

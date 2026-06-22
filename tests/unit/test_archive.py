@@ -261,6 +261,16 @@ def test_readme_flags_identifying_serials():
     assert "Connected hardware" not in assembler._render_readme(rec, [])
 
 
+def test_archive_name_includes_time_to_seconds(fair_dirs):
+    import re
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    name = assembler.archive_name(record)
+    # YYYY-MM-DD_HH-MM-SS_<location>_<operator>
+    assert re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_", name)
+    assert name.endswith("_marsh-creek-north-bank_jane-doe")
+
+
 def test_archive_name_collision(fair_dirs):
     harvest, context = _spool(fair_dirs, n_bags=2)
     record = builder.build(harvest, context)
@@ -346,6 +356,18 @@ def test_index_filters(fair_dirs):
     assert rows == [] and total == 1
 
 
+def test_index_quality_filter(fair_dirs):
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    record.provenance.data_quality = "poor"
+    index.insert(record, paths.archive_dir() / "x")
+
+    rows, total = index.query(quality="poor")
+    assert total == 1
+    rows, total = index.query(quality="ok")
+    assert total == 0
+
+
 def test_reindex_rebuilds(fair_dirs):
     harvest, context = _spool(fair_dirs)
     record = builder.build(harvest, context)
@@ -354,3 +376,81 @@ def test_reindex_rebuilds(fair_dirs):
     assert index.reindex() == 1
     rows, total = index.query()
     assert rows[0]["archive_path"] == str(final)
+
+
+def test_find_similar_flags_mistyped_location(fair_dirs):
+    from fair_ros.archive import duplicates
+    # Save a "Crosslab" mission.
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    # A second mission, same operator/time, location mistyped "Crossloab".
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crossloab"
+    context2["identity"]["created_at"] = context["identity"]["created_at"]
+    record2 = builder.build(harvest2, context2)
+
+    matches = duplicates.find_similar(record2)
+    assert len(matches) == 1
+    assert matches[0]["location"] == "Crosslab"
+    assert "typo" in duplicates.describe(record2, matches[0])
+
+
+def test_find_similar_ignores_unrelated(fair_dirs):
+    from fair_ros.archive import duplicates
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Harbour East Dock"
+    context2["identity"]["created_at"] = context["identity"]["created_at"]
+    assert duplicates.find_similar(builder.build(harvest2, context2)) == []
+
+
+def test_find_similar_respects_time_window(fair_dirs):
+    from datetime import timedelta
+
+    from fair_ros.archive import duplicates
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    saved = builder.build(harvest, context)
+    assembler.assemble(saved, harvest)
+
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crosslab"
+    record2 = builder.build(harvest2, context2)
+    # Same place, but three days later -> outside the default 24h window.
+    record2.identity.created_at = saved.identity.created_at + timedelta(days=3)
+    assert duplicates.find_similar(record2) == []
+
+
+def test_index_persists_data_quality(fair_dirs):
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    record.provenance.data_quality = "poor"
+    index.insert(record, paths.archive_dir() / "x")
+    rows, _ = index.query()
+    assert rows[0]["data_quality"] == "poor"
+
+
+def test_index_migrates_pre_v2_database(fair_dirs):
+    import sqlite3
+    # A v1 database has no data_quality column; _connect must add it.
+    paths.index_db_path().parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(paths.index_db_path())
+    con.execute("CREATE TABLE missions (mission_id TEXT PRIMARY KEY, "
+                "created_at TEXT, operator TEXT, location TEXT, goal TEXT, "
+                "archive_path TEXT UNIQUE, duration_s REAL, size_bytes INTEGER, "
+                "bag_count INTEGER, warning_count INTEGER, robot_name TEXT, "
+                "fair_ros_version TEXT, schema_version TEXT)")
+    con.commit()
+    con.close()
+
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    record.provenance.data_quality = "degraded"
+    index.insert(record, paths.archive_dir() / "x")  # must not raise
+    rows, _ = index.query()
+    assert rows[0]["data_quality"] == "degraded"

@@ -33,8 +33,9 @@ def sanitise(text: str, max_len: int = 40) -> str:
 
 
 def archive_name(record: MissionRecord) -> str:
-    date = record.identity.created_at.astimezone().strftime("%Y-%m-%d")
-    base = (f"{date}_{sanitise(record.intent.location_name)}"
+    # Date *and* time to the second (colons aren't filesystem-safe, so HH-MM-SS).
+    stamp = record.identity.created_at.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+    base = (f"{stamp}_{sanitise(record.intent.location_name)}"
             f"_{sanitise(record.identity.operator_name)}")
     name, n = base, 1
     while (paths.archive_dir() / name).exists():
