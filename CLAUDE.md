@@ -233,7 +233,7 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
 
 ### Archive (`archive/`)
 - `assembler.py` creates the RO-Crate directory under `/var/fair-ros/archive/`
-- Directory name format: `YYYY-MM-DD_<sanitised-location>_<operator>/`
+- Directory name format: `YYYY-MM-DD_HH-MM-SS_<sanitised-location>_<operator>/`
 - `ro_crate.py` writes `ro-crate-metadata.json` as JSON-LD aligned to:
   - RO-Crate 1.1 spec
   - schema.org/Dataset

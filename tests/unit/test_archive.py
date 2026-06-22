@@ -261,6 +261,16 @@ def test_readme_flags_identifying_serials():
     assert "Connected hardware" not in assembler._render_readme(rec, [])
 
 
+def test_archive_name_includes_time_to_seconds(fair_dirs):
+    import re
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    name = assembler.archive_name(record)
+    # YYYY-MM-DD_HH-MM-SS_<location>_<operator>
+    assert re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_", name)
+    assert name.endswith("_marsh-creek-north-bank_jane-doe")
+
+
 def test_archive_name_collision(fair_dirs):
     harvest, context = _spool(fair_dirs, n_bags=2)
     record = builder.build(harvest, context)

@@ -7,19 +7,20 @@ It runs only from `mission_close`, after the operator confirms "Save".
 ## Directory naming
 
 ```
-/var/fair-ros/archive/<YYYY-MM-DD>_<location>_<operator>/
+/var/fair-ros/archive/<YYYY-MM-DD_HH-MM-SS>_<location>_<operator>/
 ```
 
-- Date from `identity.created_at` (local time).
+- Date and time to the second from `identity.created_at` (local time); colons
+  are not filesystem-safe, so the time uses `HH-MM-SS`.
 - `<location>` and `<operator>` are sanitised: lowercase, ASCII-transliterated,
   non-alphanumerics collapsed to single `-`, trimmed, max 40 chars each.
   ("Marsh Creek, north bank" → `marsh-creek-north-bank`).
-- Collision (same day, place, operator): append `_2`, `_3`, …
+- Collision (same timestamp, place, operator): append `_2`, `_3`, …
 
 ## Crate layout
 
 ```
-2026-06-12_marsh-creek-north-bank_jane-doe/
+2026-06-12_14-02-58_marsh-creek-north-bank_jane-doe/
 ├── ro-crate-metadata.json        # JSON-LD, see specs/ro_crate_schema.md
 ├── mission_record.json           # the full MissionRecord, machine-readable
 ├── README.md                     # generated plain-language summary (the
