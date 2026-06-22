@@ -59,6 +59,7 @@ setup(
             "list = fair_ros.subcommands.list_missions:ListVerb",
             "diff = fair_ros.subcommands.mission_diff:DiffVerb",
             "verify = fair_ros.subcommands.verify:VerifyVerb",
+            "doctor = fair_ros.subcommands.doctor:DoctorVerb",
         ],
         "console_scripts": [
             "fair-ros-watchdog = fair_ros.watchdog.watchdog:main",

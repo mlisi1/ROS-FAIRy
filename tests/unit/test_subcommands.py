@@ -8,6 +8,7 @@ from rich.console import Console
 
 from fair_ros.manifest import builder
 from fair_ros.subcommands import (
+    doctor,
     list_missions,
     mission_close,
     mission_diff,
@@ -285,6 +286,59 @@ def test_setup_ask_robot_validates_email(fair_dirs):
                            side_effect=lambda *a, **k: next(answers)):
         config = setup_cmd.ask_robot(_console(), {})
     assert config["owner"]["contact_email"] == "fleet@example.org"
+
+
+# --- doctor ------------------------------------------------------------------
+
+def test_doctor_check_clock(monkeypatch):
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: False)
+    assert doctor._check_clock()["status"] == doctor.FAIL
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: True)
+    assert doctor._check_clock()["status"] == doctor.OK
+    monkeypatch.setattr(doctor.clock, "is_synchronized", lambda: None)
+    assert doctor._check_clock()["status"] == doctor.SKIP
+
+
+def test_doctor_service_harvest_distinguishes_service_context():
+    from fair_ros.watchdog import watchdog as wd
+    with mock.patch.object(wd, "read_state",
+                           return_value={"harvest_status": {"ros_graph": "ok"}}):
+        assert doctor._check_service_harvest()["status"] == doctor.OK
+    with mock.patch.object(
+            wd, "read_state",
+            return_value={"harvest_status": {"ros_graph": "failed"}}):
+        c = doctor._check_service_harvest()
+        assert c["status"] == doctor.FAIL and "ros2 fair setup" in c["hint"]
+    with mock.patch.object(wd, "read_state", return_value=None):
+        assert doctor._check_service_harvest()["status"] == doctor.SKIP
+
+
+def test_doctor_check_that_raises_becomes_fail():
+    def boom():
+        raise RuntimeError("nope")
+    with mock.patch.object(doctor, "_CHECKS", (boom,)):
+        results = doctor.diagnose()
+    assert results[0]["status"] == doctor.FAIL
+    assert "nope" in results[0]["detail"]
+
+
+def test_doctor_run_not_ready_exit_and_json(capsys):
+    fake = [{"status": doctor.OK, "title": "a", "detail": "", "hint": ""},
+            {"status": doctor.FAIL, "title": "b", "detail": "d", "hint": "h"}]
+    with mock.patch.object(doctor, "diagnose", return_value=fake):
+        rc = doctor.run(SimpleNamespace(json=True))
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert data["result"] == "fail" and len(data["checks"]) == 2
+
+
+def test_doctor_run_ready():
+    fake = [{"status": doctor.OK, "title": "a", "detail": "", "hint": ""}]
+    console = _console()
+    with mock.patch.object(doctor, "diagnose", return_value=fake):
+        rc = doctor.run(ARGS, console=console)
+    assert rc == 0
+    assert "READY" in console.file.getvalue()
 
 
 def test_setup_captures_ros_environment(fair_dirs):
