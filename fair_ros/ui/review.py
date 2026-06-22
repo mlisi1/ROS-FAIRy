@@ -27,7 +27,8 @@ def human_size(size_bytes: int) -> str:
 
 def show_summary(record: MissionRecord, harvest_warnings: list[str],
                  console: Console | None = None,
-                 quality: Quality | None = None) -> None:
+                 quality: Quality | None = None,
+                 duplicates: list[str] | None = None) -> None:
     console = console or Console()
     facts = Table.grid(padding=(0, 2))
     facts.add_column(style="bold")
@@ -72,6 +73,12 @@ def show_summary(record: MissionRecord, harvest_warnings: list[str],
                                   style="bold")]
         body += [Text(f" • {reason}", style=color)
                  for reason in quality.reasons]
+        body += [Text("")]
+    if duplicates:
+        if border == "cyan":
+            border = "yellow"
+        body += [Text("Possible duplicate", style="bold yellow")]
+        body += [Text(f" ⚠ {d}", style="yellow") for d in duplicates]
         body += [Text("")]
     body += [facts]
     if sensor_lines:

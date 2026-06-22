@@ -89,6 +89,7 @@ fair-ros/
 │   ├── archive/
 │   │   ├── assembler.py             ← builds RO-Crate directory structure
 │   │   ├── ro_crate.py              ← writes ro-crate-metadata.json (JSON-LD)
+│   │   ├── duplicates.py            ← near-duplicate mission detection (close-time nudge)
 │   │   └── index.py                 ← SQLite mission index (read/write)
 │   ├── ui/
 │   │   ├── briefing.py              ← interactive mission_start wizard (rich TUI)
@@ -239,6 +240,9 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
   - schema.org/Dataset
   - W3C SSN/SOSA for sensor descriptions
 - `index.py` inserts a row into SQLite after successful archive
+- `duplicates.py` flags a recently-saved mission by the same operator at a very
+  similar location (fuzzy match, e.g. "Crosslab"/"Crossloab"); `mission_close`
+  surfaces it as a non-blocking "Possible duplicate" note before the save
 
 ---
 

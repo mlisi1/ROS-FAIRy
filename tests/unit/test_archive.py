@@ -366,6 +366,54 @@ def test_reindex_rebuilds(fair_dirs):
     assert rows[0]["archive_path"] == str(final)
 
 
+def test_find_similar_flags_mistyped_location(fair_dirs):
+    from fair_ros.archive import duplicates
+    # Save a "Crosslab" mission.
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    # A second mission, same operator/time, location mistyped "Crossloab".
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crossloab"
+    context2["identity"]["created_at"] = context["identity"]["created_at"]
+    record2 = builder.build(harvest2, context2)
+
+    matches = duplicates.find_similar(record2)
+    assert len(matches) == 1
+    assert matches[0]["location"] == "Crosslab"
+    assert "typo" in duplicates.describe(record2, matches[0])
+
+
+def test_find_similar_ignores_unrelated(fair_dirs):
+    from fair_ros.archive import duplicates
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Harbour East Dock"
+    context2["identity"]["created_at"] = context["identity"]["created_at"]
+    assert duplicates.find_similar(builder.build(harvest2, context2)) == []
+
+
+def test_find_similar_respects_time_window(fair_dirs):
+    from datetime import timedelta
+
+    from fair_ros.archive import duplicates
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    saved = builder.build(harvest, context)
+    assembler.assemble(saved, harvest)
+
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crosslab"
+    record2 = builder.build(harvest2, context2)
+    # Same place, but three days later -> outside the default 24h window.
+    record2.identity.created_at = saved.identity.created_at + timedelta(days=3)
+    assert duplicates.find_similar(record2) == []
+
+
 def test_index_persists_data_quality(fair_dirs):
     harvest, context = _spool(fair_dirs)
     record = builder.build(harvest, context)

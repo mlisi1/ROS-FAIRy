@@ -129,8 +129,12 @@ def run(args, console: Console | None = None) -> int:
     quality = quality_mod.assess(record, harvest)
     record.provenance.data_quality = quality.level
 
+    from fair_ros.archive import duplicates
+    dup_msgs = [duplicates.describe(record, row)
+                for row in duplicates.find_similar(record)]
+
     review.show_summary(record, builder.harvest_level_warnings(harvest),
-                        console=console, quality=quality)
+                        console=console, quality=quality, duplicates=dup_msgs)
     decision = review.confirm_save(
         console=console, risky=quality.level == quality_mod.POOR)
 
