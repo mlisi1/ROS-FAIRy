@@ -387,6 +387,26 @@ def test_mission_close_gates_poor_mission(fair_dirs):
     assert captured["risky"] is True
 
 
+def test_mission_close_warns_on_likely_duplicate(fair_dirs):
+    from fair_ros.archive import assembler
+
+    # 1) Save a "Crosslab" mission.
+    harvest, context = _spool(fair_dirs)
+    context["intent"]["location_name"] = "Crosslab"
+    assembler.assemble(builder.build(harvest, context), harvest)
+
+    # 2) Spool a new mission with the place mistyped "Crossloab".
+    harvest2, context2 = _spool(fair_dirs)
+    context2["intent"]["location_name"] = "Crossloab"
+    fsio.atomic_write_json(paths.mission_context_path(), context2)
+
+    console = _console()
+    with mock.patch.object(mission_close.review, "confirm_save",
+                           return_value="keep"):
+        assert mission_close.run(ARGS, console=console) == 0
+    assert "Possible duplicate" in console.file.getvalue()
+
+
 def test_mission_close_does_not_gate_healthy_mission(fair_dirs):
     _spool(fair_dirs)
     captured = {}

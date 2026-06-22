@@ -147,6 +147,10 @@ The single save/discard decision.
 5. **Summary panel** (rich), in order:
    - When not `ok`: a coloured **Data quality** header (INCOMPLETE / POOR) and
      its plain-language reasons; the panel border turns yellow/red.
+   - **Possible duplicate** (if any): a non-blocking note when the same operator
+     saved a mission at a very similar location within the last 24 h
+     (`archive/duplicates.py`, fuzzy match — catches typos like
+     "Crosslab"/"Crossloab"). Informational; repeat missions are legitimate.
    - Mission title line: goal, location, date.
    - Operator and robot names.
    - Recording: bag count, total duration ("42 minutes" or "length unknown"),
