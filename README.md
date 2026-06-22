@@ -20,21 +20,43 @@ network, everything on the robot.
 
 ```
 ros2 fair setup            # one-time robot setup (engineer, needs sudo)
+ros2 fair doctor           # preflight: is the robot ready to capture a mission?
 ros2 fair mission_start    # 5-question briefing, under 2 minutes
 ros2 fair mission_record   # record (wraps ros2 bag record)
-ros2 fair mission_close    # review summary, then save or discard
+ros2 fair mission_close    # review summary + data-quality verdict, save or discard
 ros2 fair mission_status   # what is the assistant doing right now?
 ros2 fair list             # table of saved missions
 ros2 fair diff [A] [B]     # compare two missions, show only what changed
 ros2 fair verify [M]       # check a saved archive is complete and unmodified
+ros2 fair export [M]       # package a mission into one portable, checksummed file
+ros2 fair repair [M]       # re-stamp bad-clock recordings so they play again
 ```
 
 All verbs accept `--debug` for verbose logging to stderr. `mission_status`,
-`list`, `diff`, and `verify` accept `--json` for machine-readable output (for
-scripts).
+`list`, `diff`, `verify`, `doctor`, `export`, and `repair` accept `--json` for
+machine-readable output (for scripts).
 
 `mission_close` accepts `--note TEXT` to attach post-mission notes without
 an interactive prompt.
+
+### Safeguards
+
+The tool actively prevents the field failures that produce useless data:
+
+- **Preflight check** — `ros2 fair doctor` reports a single READY / NOT READY
+  verdict: watchdog running, ROS reachable (from your shell *and* from the
+  background service), clock synchronised, `mcap` present, disk space, robot
+  identity. Run it before a mission instead of discovering problems after.
+- **Clock guardrail** — an unsynchronised system clock stamps messages near the
+  epoch, making recordings unplayable. `mission_record` refuses to record on a
+  bad clock unless you confirm; `mission_start` warns.
+- **Degradation gate** — `mission_close` grades every mission `ok` / `degraded`
+  / `poor`. A `poor` mission (no ROS context captured, or recordings with an
+  unusable clock) makes saving a deliberate choice and is flagged in
+  `ros2 fair list`, so a near-empty archive can't be saved by reflex.
+- **Recovery** — `ros2 fair repair` writes playable copies of bad-clock
+  recordings (re-stamped, regenerated `metadata.yaml`, originals untouched). See
+  [docs/recovering-bad-clock-bags.md](docs/recovering-bad-clock-bags.md).
 
 ## What gets captured automatically
 
@@ -59,7 +81,7 @@ commands (e.g. no `lsusb`) produce partial results, never failures.
 Each saved mission is a self-contained directory:
 
 ```
-2026-06-12_marsh-creek-north-bank_jane-doe/
+2026-06-12_14-02-58_marsh-creek-north-bank_jane-doe/
 ├── ro-crate-metadata.json     # JSON-LD (RO-Crate 1.1 + schema.org + SSN/SOSA)
 ├── mission_record.json        # full structured record (machine-readable)
 ├── README.md                  # plain-language summary
@@ -82,9 +104,15 @@ Each saved mission is a self-contained directory:
 - Automatic harvest: robot identity, ROS graph, software versions, Docker
   digests, Python environment, connected hardware, robot description
 - Bag health (gaps, low-rate, never-published) on **both sqlite3 and MCAP**
-  storage, with distro-aware defaults and pluggable storage readers
+  storage, with distro-aware defaults and pluggable storage readers, plus
+  recording-window recovery from a corrupted bag clock
+- `ros2 fair doctor` — preflight readiness check (incl. whether the background
+  service, not just your shell, can reach ROS)
+- Clock guardrail before recording + data-quality gate at save time
 - `ros2 fair verify` — schema, RO-Crate JSON-LD, referenced files,
   **per-file bag checksums + calibration checksums**, and index registration
+- `ros2 fair export` — one portable, `sha256`-checksummed bundle per mission
+- `ros2 fair repair` — make bad-clock recordings playable again (non-destructive)
 - CI gate: ruff + mypy + pytest across Python 3.10–3.13
 
 **Ready, needs a real robot to exercise**
@@ -123,9 +151,9 @@ Optional live-ROS smoke tests (deselected by default) validate plugin
 registration and the real harvest/record/verify pipeline on a sourced ROS 2
 box: `pytest -m ros -v` — see [docs/real-robot-smoke-test.md](docs/real-robot-smoke-test.md).
 
-Requires Python ≥ 3.10, pydantic ≥ 2.5, rich ≥ 13, PyYAML, inotify_simple.
-The `mcap` package is an optional extra (in `[test]`/`[dev]`) that enables
-timestamp-level health analysis of MCAP bags; without it, MCAP bags get
-metadata-level checks only.
+Requires Python ≥ 3.10, pydantic ≥ 2.5, rich ≥ 13, PyYAML, inotify_simple, and
+`mcap` (MCAP is rosbag2's default storage from Jazzy on; it enables bag timing,
+health analysis, and repair). The code still degrades gracefully if `mcap` is
+somehow absent.
 
 Licensed under the [Apache License 2.0](LICENSE).
