@@ -66,6 +66,7 @@ fair-ros/
 │   │   ├── mission_status.py
 │   │   ├── mission_diff.py          ← compare two missions (ros2 fair diff)
 │   │   ├── verify.py                ← integrity-check a saved archive (ros2 fair verify)
+│   │   ├── doctor.py                ← preflight readiness self-check (ros2 fair doctor)
 │   │   └── list_missions.py
 │   ├── harvest/                     ← auto-discovery subsystem
 │   │   ├── ros_graph.py             ← nodes, topics, params via subprocess
@@ -203,7 +204,11 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
 - `verify.py` — re-checks a saved archive (schema, RO-Crate JSON-LD, referenced
   files present, bag data files present, calibration checksums, index entry);
   read-only, plain-language PASS/FAIL
-  (`mission_status`, `list`, `diff`, and `verify` accept `--json` for scripts)
+- `doctor.py` — preflight readiness self-check run before a mission: robot
+  identity, watchdog liveness, ROS reachable (this shell *and* the service's
+  last harvest), ROS env sourced, clock sync, mcap, disk, docker; read-only,
+  plain-language READY / NOT READY, exit 1 on any failure
+  (`mission_status`, `list`, `diff`, `verify`, and `doctor` accept `--json`)
 
 ### Manifest Builder (`manifest/`)
 - `builder.py` merges `harvest.json` + `mission_context.json` → `MissionRecord`
@@ -244,6 +249,7 @@ Subcommands register under:
         'list = fair_ros.subcommands.list_missions:ListVerb',
         'diff = fair_ros.subcommands.mission_diff:DiffVerb',
         'verify = fair_ros.subcommands.verify:VerifyVerb',
+        'doctor = fair_ros.subcommands.doctor:DoctorVerb',
     ],
 ```
 

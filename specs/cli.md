@@ -270,3 +270,41 @@ Bag bytes are pinned at archive time: the assembler records a sha256 for every
 file in each bag (`Bag.file_sha256`), so verify detects byte-level modification,
 not just missing files. Archives written before 1.0 have no bag checksums and
 fall back to the structural check (reported with a `!`).
+
+---
+
+## `ros2 fair doctor`
+
+Preflight readiness self-check, run before a mission. Where `verify` asks "is
+this *saved archive* still intact?", `doctor` asks "is this *robot* ready to
+capture a good mission *right now*?" — catching the failure modes that otherwise
+only surface as an empty or unusable archive afterwards. Read-only; takes no
+mission argument.
+
+Runs these checks, each a plain-language ✓/!/✗/– line (with a `→ hint` under any
+✗/!) in one panel:
+
+| Check | Status on problem |
+|---|---|
+| robot identity file present and valid (`harvest/robot_identity`) | ✗ fail |
+| recording assistant (watchdog) running, heartbeat fresh | ✗ fail (! if stale) |
+| ROS 2 reachable from **this shell** (`ros2 node list` non-empty) | ✗ fail (! if reachable but no nodes) |
+| ROS environment sourced here (`ROS_DISTRO` set; reports rmw/domain) | ! warn |
+| the **watchdog's own** last graph harvest succeeded (service-context truth — the empty-archive failure) | ✗ fail (– if it hasn't harvested yet) |
+| system clock NTP-synchronised (`utils/clock`) | ✗ fail (– if undeterminable) |
+| `mcap` available for bag timing/health | ! warn |
+| spool free space ≥ 1 GiB | ✗ fail |
+| Docker reachable | – skip (optional) |
+
+The service-harvest check is the one that distinguishes "ROS works in my shell"
+from "the background service can actually see ROS" — the exact gap that produced
+empty archives on the real robot.
+
+Overall result: **READY** (no ✗/!), **READY (with warnings)** (some ! but no ✗),
+or **NOT READY** (any ✗). A failing check (`✗`) makes the exit code `1`; warnings
+and skips do not. Each check that raises unexpectedly is itself reported as a ✗
+rather than crashing the command.
+
+Options:
+- `--json` — emits `{"result": "ok|warn|fail", "checks": [{"status", "title",
+  "detail", "hint"}, …]}` to stdout.
