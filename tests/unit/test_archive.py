@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from fair_ros.archive import assembler, index, ro_crate
+from fair_ros.archive import assembler, index
 from fair_ros.archive.assembler import AssemblyError
 from fair_ros.manifest import builder
 from fair_ros.utils import fsio, paths
@@ -50,8 +50,32 @@ def _spool(fair_dirs, n_bags=1, with_cal=True):
                       "tf_static": [{"parent_frame": "base", "child_frame":
                                      "gps_link"}]},
         harvest_status={"robot_identity": "ok", "system_info": "ok",
+                        "python_env": "ok", "hardware_devices": "partial",
                         "ros_graph": "ok", "ros_descriptions": "ok",
-                        "docker_info": "ok"})
+                        "docker_info": "ok"},
+        python_env={
+            "python_env": {
+                "executable": "/opt/venv/bin/python3",
+                "version": "3.12.3 (main)",
+                "venv_path": "/opt/venv",
+                "pip_version": "24.0",
+                "packages": [{"name": "rclpy", "version": "5.0.0",
+                              "installer": "apt", "editable": False,
+                              "location": None}],
+                "fair_ros_editable": False,
+                "sys_path": ["/opt/venv/lib/python3.12/site-packages"]},
+            "pip_freeze": "rclpy==5.0.0\n",
+            "pip_list_json": None},
+        hardware_devices={
+            "devices": [{"device_class": "usb", "vendor_id": "1546",
+                         "product_id": "01a9", "vendor_name": "u-blox AG",
+                         "product_name": "ZED-F9P", "serial_number": None,
+                         "device_path": None,
+                         "bus_path": "Bus 002 Device 003", "driver": None,
+                         "source_command": "lsusb",
+                         "udev_properties": None}],
+            "lsusb_verbose": "Bus 002 Device 003: ID 1546:01a9\n",
+            "dmesg_usb": None})
     for i in range(n_bags):
         bag = make_bag(paths.bags_dir() / f"rosbag2_{i}",
                        {"/fix": _steady(T0 + i * 700, T0 + i * 700 + 600, 10)})
@@ -98,7 +122,14 @@ def test_assemble_full_crate(fair_dirs):
     assert (final / "harvest" / "tf_static.json").is_file()
     assert (final / "calibrations" / "gps0.yaml").is_file()
     assert (final / "docker" / "containers.json").is_file()
-    assert "Survey eelgrass beds" in (final / "README.md").read_text()
+    # python env + hardware raw artifacts extracted (dmesg was None → no file)
+    assert (final / "harvest" / "pip_freeze.txt").read_text() == \
+        "rclpy==5.0.0\n"
+    assert (final / "harvest" / "lsusb_verbose.txt").is_file()
+    assert not (final / "harvest" / "dmesg_usb.txt").exists()
+    readme = (final / "README.md").read_text()
+    assert "Survey eelgrass beds" in readme
+    assert "## Connected hardware" in readme
     # manifest updated with crate-relative paths and hashes
     saved = json.loads((final / "mission_record.json").read_text())
     assert saved["bags"][0]["path"] == "bags/rosbag2_0"
@@ -144,22 +175,90 @@ def test_ro_crate_document(fair_dirs):
     sensor = by_id["#sensor-gps0"]
     assert sensor["sosa:isHostedBy"] == {"@id": "#robot"}
     assert sensor["subjectOf"] == {"@id": "calibrations/gps0.yaml"}
+    # PropertyValues are hoisted into @id'd entities and referenced
+    assert {"@id": "#sensor-gps0-topic"} in sensor["additionalProperty"]
+    assert by_id["#sensor-gps0-topic"]["value"] == "/fix"
+    assert by_id["#sensor-gps0-topic"]["@type"] == "PropertyValue"
 
     mission = by_id["#mission"]
     assert mission["agent"] == {"@id": "#operator"}
     assert {"@id": "#robot"} in mission["instrument"]
     assert {"@id": "#ros2"} in mission["instrument"]
+    assert {"@id": "#python-runtime"} in mission["instrument"]
     assert {"@id": "#container-navstack"} in mission["instrument"]
     assert mission["startTime"] == "2026-06-12T14:03:00+00:00"
 
+    py = by_id["#python-runtime"]
+    assert py["@type"] == "SoftwareApplication"
+    assert py["version"] == "3.12.3 (main)"
+    py_props = {by_id[ref["@id"]]["name"]: by_id[ref["@id"]]["value"]
+                for ref in py["additionalProperty"]}
+    assert py_props["executable"] == "/opt/venv/bin/python3"
+    assert py_props["venv_path"] == "/opt/venv"
+
     bag = by_id["bags/rosbag2_0/"]
     assert bag["encodingFormat"] == "application/x-sqlite3"
-    assert bag["variableMeasured"][0]["name"] == "/fix"
+    first_var = by_id[bag["variableMeasured"][0]["@id"]]
+    assert first_var["name"] == "/fix"
+    assert first_var["value"] == 6001
+
+    # bag files are File entities with sha256, referenced by the bag's hasPart,
+    # and the digests match mission_record.json's bags[].file_sha256
+    recorded = record.bags[0].file_sha256
+    assert recorded, "expected per-file bag checksums"
+    parts = {p["@id"] for p in bag["hasPart"]}
+    for rel, digest in recorded.items():
+        file_id = f"bags/rosbag2_0/{rel}"
+        assert file_id in parts
+        assert by_id[file_id]["@type"] == "File"
+        assert by_id[file_id]["sha256"] == digest
+    assert by_id["bags/rosbag2_0/rosbag2_0_0.db3"]["encodingFormat"] == \
+        "application/x-sqlite3"
+
+    # confidence markers share one hoisted entity, referenced by user fields
+    assert by_id["#operator"]["additionalProperty"] == {"@id": "#confidence-user"}
+    assert by_id["#confidence-user"]["value"] == "user"
     assert by_id["#ros2"]["version"] == "jazzy"
     assert by_id["#container-navstack"]["identifier"] == \
         "example/navstack@sha256:7be1"
     assert by_id["calibrations/gps0.yaml"]["sha256"]
     assert by_id["ro-crate-metadata.json"]["about"] == {"@id": "./"}
+
+
+def test_readme_flags_identifying_serials():
+    from datetime import datetime, timezone
+
+    from fair_ros.manifest.schema import (
+        HardwareDevice,
+        Identity,
+        Intent,
+        MissionRecord,
+        Provenance,
+        Software,
+    )
+    rec = MissionRecord(
+        identity=Identity(mission_id="m-x",
+                          created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+                          operator_name="Jane"),
+        intent=Intent(goal="Survey", location_name="lab"),
+        software=Software(fair_ros_version="0.1.0"),
+        hardware_devices=[
+            HardwareDevice(source_command="lsusb", device_class="usb",
+                           product_name="u-blox ZED-F9P",
+                           serial_number="3C123"),
+            HardwareDevice(source_command="glob:/dev/video*",
+                           device_class="video", device_path="/dev/video0")],
+        provenance=Provenance(fair_ros_version="0.1.0", schema_version="1.0",
+                              hostname="h", kernel="Linux", arch="x86_64"))
+    md = assembler._render_readme(rec, [])
+    assert "## Connected hardware" in md
+    assert "u-blox ZED-F9P" in md
+    assert "1 of these record a serial number" in md
+    assert "Serial numbers can identify" in md
+
+    # no hardware → no section at all
+    rec.hardware_devices = []
+    assert "Connected hardware" not in assembler._render_readme(rec, [])
 
 
 def test_archive_name_collision(fair_dirs):

@@ -23,6 +23,12 @@ setup(
         "PyYAML>=6",
         "inotify_simple>=1.3",
     ],
+    extras_require={
+        # mcap enables MCAP bag health analysis (and lets tests write/read
+        # real .mcap fixtures). Optional at runtime; degrades gracefully.
+        "test": ["pytest", "rocrate", "mcap"],
+        "dev": ["pytest", "rocrate", "mcap", "ruff", "mypy"],
+    },
     zip_safe=False,
     author="fair-ros contributors",
     maintainer="fair-ros contributors",
@@ -31,7 +37,6 @@ setup(
                 "friction: automatic context capture, plain-language "
                 "briefings, RO-Crate archives.",
     license="Apache-2.0",
-    tests_require=["pytest"],
     entry_points={
         "ros2cli.command": [
             "fair = fair_ros.command.fair:FairCommand",
@@ -50,6 +55,8 @@ setup(
             "mission_status = fair_ros.subcommands.mission_status:"
             "MissionStatusVerb",
             "list = fair_ros.subcommands.list_missions:ListVerb",
+            "diff = fair_ros.subcommands.mission_diff:DiffVerb",
+            "verify = fair_ros.subcommands.verify:VerifyVerb",
         ],
         "console_scripts": [
             "fair-ros-watchdog = fair_ros.watchdog.watchdog:main",

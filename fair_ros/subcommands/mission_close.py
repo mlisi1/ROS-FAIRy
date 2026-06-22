@@ -1,6 +1,7 @@
 """ros2 fair mission_close — the single save/discard decision."""
 
 import shutil
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -9,7 +10,7 @@ from rich.prompt import Confirm
 
 from fair_ros.archive import assembler
 from fair_ros.manifest import builder, validator
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui import briefing, review
 from fair_ros.utils import fsio, paths
 from fair_ros.watchdog import watchdog as wd
@@ -38,9 +39,7 @@ def _salvage_bags(harvest: dict | None) -> dict | None:
     if harvest is None:
         harvest = builder.compose_harvest(
             None, None, None, None, None,
-            {m: "failed" for m in ("robot_identity", "system_info",
-                                   "ros_graph", "docker_info",
-                                   "ros_descriptions")})
+            {m: "failed" for m in builder.HARVEST_MODULES})
     fsio.atomic_write_json(paths.harvest_json_path(), harvest)
     for bag_dir in missing:
         if (bag_dir / "metadata.yaml").is_file() or \
@@ -58,6 +57,7 @@ def _discard_spool() -> None:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     interrupted = assembler.find_interrupted_staging()
@@ -86,6 +86,7 @@ def run(args, console: Console | None = None) -> int:
     if not (harvest or {}).get("bags"):
         console.print("There's nothing recorded yet.")
         return 1
+    assert harvest is not None  # a None harvest has no bags, handled above
 
     missing = validator.missing_user_fields(context)
     if missing:
@@ -99,6 +100,23 @@ def run(args, console: Console | None = None) -> int:
             for field, value in answers.items():
                 section = "identity" if field == "operator_name" else "intent"
                 context.setdefault(section, {})[field] = value
+        fsio.atomic_write_json(paths.mission_context_path(), context)
+
+    # missing_user_fields(None) always reports all required fields, so a None
+    # context above is always replaced before reaching here.
+    assert context is not None
+    existing_notes = (context.get("intent") or {}).get("notes")
+    note_arg = getattr(args, "note", None)
+    if note_arg is not None:
+        new_notes = note_arg.strip() or None
+    elif sys.stdin.isatty():
+        new_notes = briefing.ask_notes(console, default=existing_notes)
+    else:
+        # Non-interactive (piped/scripted): keep whatever notes exist rather
+        # than blocking on a prompt nobody can answer.
+        new_notes = existing_notes
+    if new_notes != existing_notes:
+        context.setdefault("intent", {})["notes"] = new_notes
         fsio.atomic_write_json(paths.mission_context_path(), context)
 
     try:
@@ -142,7 +160,12 @@ class MissionCloseVerb(VerbExtension):
     """Review the finished mission and decide: save it or discard it."""
 
     def add_arguments(self, parser, cli_name):
-        pass
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
+        parser.add_argument(
+            "--note", metavar="TEXT",
+            help="post-mission notes (skips the interactive prompt)")
 
     def main(self, *, args):
         return run(args)

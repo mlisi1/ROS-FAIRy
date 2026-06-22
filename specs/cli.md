@@ -166,7 +166,12 @@ spool contents, and `mission_context.json`:
 - Mission briefing: operator + goal, or "not started yet".
 - Recording: active bag, size so far, "growing" indicator; or "none".
 - Context captured: per harvest module, plain words ("software versions ✓",
-  "robot description ✗ — will retry").
+  "robot description ✗ — will retry"). Modules: robot identity, computer
+  details, Python environment, connected hardware, software versions and
+  settings, robot description, container software. Glyphs: `✓` ok, `⚠` partial,
+  `–` skipped ("not used on this robot"), `✗` failed/timeout ("will keep
+  trying"). The `partial` state (`⚠`) applies to the Python environment and
+  connected-hardware modules when some sources were unavailable.
 
 `--json` flag emits the raw machine-readable status for scripts (the one
 sanctioned JSON output, since its audience is scripts, not operators).
@@ -195,6 +200,65 @@ Options:
 - `--limit <n>` — default 20; footer line "Showing 20 of 134 missions" when
   truncated.
 - `--path` — adds the archive path column (for engineers copying data off).
+- `--json` — emits `{"missions": [...], "total": <n>, "shown": <n>}` to stdout,
+  one object per index row (all columns). Sanctioned JSON output for scripts;
+  bypasses the table and the plain-language empty/no-index messages (those
+  become an empty `missions` list).
 
 Empty result: "No missions found." Index file missing: "No missions have been
 saved on this robot yet."
+
+---
+
+## `ros2 fair diff [<mission_a>] [<mission_b>]`
+
+Compares two saved missions and shows only what changed, section by section
+(mission context, software, sensors, ROS graph, recordings). Sections with no
+differences are omitted.
+
+Each argument identifies a mission by **number** (`1` = newest, `2` =
+second-newest, …), **archive path**, or **mission ID**. With no arguments it
+compares the two most recent missions (`A` = older, `B` = newer); supplying a
+single argument is an error.
+
+Options:
+- `--json` — emits `{"mission_a": {…}, "mission_b": {…}, "changes": {<section>:
+  [{"label", "a", "b"}, …]}}` to stdout. `changes` contains only sections that
+  differ; `a`/`b` are the before/after values as shown in the table (empty `a` =
+  added in B, empty `b` = removed in B).
+
+Index file missing, an out-of-range number, or an unresolvable identifier each
+produce a plain-language error and exit 1.
+
+## `ros2 fair verify [<mission>]`
+
+Re-checks that a saved mission archive is complete and unmodified — the question
+a data consumer has months later. Read-only: it never touches the archive or the
+index. The argument identifies a mission the same way `diff` does (number,
+archive path, or mission ID); with no argument it verifies the most recent
+mission.
+
+Runs these checks and renders each as a plain-language ✓/!/✗ line in a single
+panel:
+
+| Check | Status on problem |
+|---|---|
+| `mission_record.json` loads and validates against the schema | ✗ fail (stops here) |
+| `ro-crate-metadata.json` is valid JSON-LD (deep-loaded with `rocrate` if installed) | ✗ fail (! if `rocrate` absent — JSON-only) |
+| `README.md`, `harvest/harvest.json` present | ! warn |
+| each bag file still matches its per-file `sha256` recorded at archive time (pre-1.0 archives without checksums fall back to a structural check — metadata + listed storage files present — reported `!`) | ✗ fail |
+| each calibration file still matches the `sha256` recorded at archive time | ✗ fail |
+| every `File` entity referenced by the crate exists on disk | ✗ fail |
+| the mission is registered in the SQLite index at this path | ! warn (`reindex()` can fix) |
+
+Overall result: **PASS** (all ✓), **PASS (with notes)** (some ! but no ✗), or
+**FAIL** (any ✗). Exit code is `0` unless any check failed, then `1`.
+
+Options:
+- `--json` — emits `{"archive": <path>, "result": "ok|warn|fail", "checks":
+  [{"status", "title", "detail"}, …]}` to stdout.
+
+Bag bytes are pinned at archive time: the assembler records a sha256 for every
+file in each bag (`Bag.file_sha256`), so verify detects byte-level modification,
+not just missing files. Archives written before 1.0 have no bag checksums and
+fall back to the structural check (reported with a `!`).

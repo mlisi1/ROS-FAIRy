@@ -10,6 +10,7 @@ Restart=always
 RestartSec=5
 # The watchdog must keep working when ROS 2 / Docker are down; it only needs
 # the spool. Run as root group fair-ros so operators can read the spool.
+Group=fair-ros
 UMask=0002
 Nice=10
 

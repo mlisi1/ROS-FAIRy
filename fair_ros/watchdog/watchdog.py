@@ -15,9 +15,10 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fair_ros.manifest import builder
 from fair_ros.utils import fsio, paths, topic_health
@@ -27,6 +28,9 @@ log = logging.getLogger("fair_ros.watchdog")
 BAG_INACTIVITY_S = 30
 RCLPY_TIMEOUT_S = 5
 DOCKER_TIMEOUT_S = 10
+PIP_TIMEOUT_S = 30
+HARDWARE_CMD_TIMEOUT_S = 10
+HARDWARE_TOTAL_TIMEOUT_S = 60
 ROS2_CLI_TIMEOUT_S = 20
 PARAM_DUMP_BUDGET_S = 60
 ROS_RETRY_INTERVAL_S = 60
@@ -50,8 +54,15 @@ def run_pipeline() -> dict[str, Any]:
 
     Returns the composed harvest.json document (without bags).
     """
-    from fair_ros.harvest import (docker_info, robot_identity,
-                                  ros_descriptions, ros_graph, system_info)
+    from fair_ros.harvest import (
+        docker_info,
+        hardware_devices,
+        python_env,
+        robot_identity,
+        ros_descriptions,
+        ros_graph,
+        system_info,
+    )
 
     status: dict[str, str] = {}
     results: dict[str, Any] = {}
@@ -67,6 +78,16 @@ def run_pipeline() -> dict[str, Any]:
 
     attempt("robot_identity", robot_identity.harvest)
     attempt("system_info", system_info.harvest)
+
+    attempt("python_env", python_env.harvest)
+    if status["python_env"] == "ok":
+        status["python_env"] = (results["python_env"] or {}).get("status", "ok")
+
+    attempt("hardware_devices", hardware_devices.harvest)
+    if status["hardware_devices"] == "ok":
+        status["hardware_devices"] = \
+            (results["hardware_devices"] or {}).get("status", "ok")
+
     attempt("ros_graph", ros_graph.harvest)
     attempt("docker_info", docker_info.harvest)
     if status["docker_info"] == "ok" and \
@@ -86,6 +107,8 @@ def run_pipeline() -> dict[str, Any]:
         docker=results["docker_info"],
         descriptions=results["ros_descriptions"],
         harvest_status=status,
+        python_env=results["python_env"],
+        hardware_devices=results["hardware_devices"],
     )
 
 
@@ -168,7 +191,9 @@ class Watchdog:
         mask, name = event.mask, event.name
         if event.wd == self._w1:
             if mask & flags.ISDIR and mask & (flags.CREATE | flags.MOVED_TO):
-                self._watch_candidate(paths.bags_dir() / name)
+                new_dir = paths.bags_dir() / name
+                self._watch_candidate(new_dir)
+                self._promote_candidate(new_dir)
             return
 
         bag_dir = self._wd_dirs.get(event.wd)
@@ -215,6 +240,32 @@ class Watchdog:
             return
         self._wd_dirs[wd] = bag_dir
         self._candidate_dirs.add(bag_dir)
+
+    def _promote_candidate(self, bag_dir: Path) -> None:
+        """Catch a storage file that already existed when we armed the watch.
+
+        inotify only reports events that happen *after* ``add_watch``, so a
+        bag whose first chunk lands in the race window between the directory
+        appearing and W2 being armed (or a finished bag dir moved into the
+        spool) would otherwise never trigger RECORDING and never be harvested.
+        Scan once on arm and apply the same IDLE→enter / RECORDING→queue logic
+        the live CREATE event would have.
+        """
+        try:
+            has_storage = any(_is_storage_file(f.name)
+                              for f in bag_dir.iterdir())
+        except OSError:
+            return
+        if not has_storage:
+            return
+        if self.state == IDLE and bag_dir in self._candidate_dirs:
+            log.info("storage already present in %s when armed", bag_dir)
+            self._enter_recording(bag_dir)
+        elif self.state == RECORDING and bag_dir != self.active_bag_dir \
+                and bag_dir not in self.queued_bags:
+            log.warning("second bag %s already had data when seen; queued",
+                        bag_dir)
+            self.queued_bags.append(bag_dir)
 
     def _enter_recording(self, bag_dir: Path) -> None:
         if bag_dir not in self._wd_dirs.values():
@@ -331,9 +382,7 @@ def append_bag_record(bag_dir: Path) -> None:
     if harvest_doc is None:
         harvest_doc = builder.compose_harvest(
             None, None, None, None, None,
-            {m: "failed" for m in ("robot_identity", "system_info",
-                                   "ros_graph", "docker_info",
-                                   "ros_descriptions")})
+            {m: "failed" for m in builder.HARVEST_MODULES})
     sensors = harvest_doc.get("sensors", [])
     warnings = topic_health.analyse_bag(bag_dir, sensors)
     meta = topic_health.parse_bag_metadata(bag_dir)

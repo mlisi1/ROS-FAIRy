@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from fair_ros.manifest import builder
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui import briefing
 from fair_ros.utils import fsio, paths
 from fair_ros.watchdog import watchdog as wd
@@ -31,6 +31,7 @@ def _last_operator() -> str | None:
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
 
     if not _watchdog_alive():
@@ -75,7 +76,9 @@ class MissionStartVerb(VerbExtension):
     """Answer five quick questions to describe the mission you're starting."""
 
     def add_arguments(self, parser, cli_name):
-        pass
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
 
     def main(self, *, args):
         return run(args)

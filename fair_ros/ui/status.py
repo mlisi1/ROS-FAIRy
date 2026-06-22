@@ -16,6 +16,8 @@ STALE_HEARTBEAT_S = 300
 _MODULE_LABELS = {
     "robot_identity": "robot identity",
     "system_info": "computer details",
+    "python_env": "Python environment",
+    "hardware_devices": "connected hardware",
     "ros_graph": "software versions and settings",
     "ros_descriptions": "robot description",
     "docker_info": "container software",
@@ -62,6 +64,8 @@ def harvest_lines(state: dict | None) -> list[str]:
         label = _MODULE_LABELS.get(module, module)
         if result == "ok":
             lines.append(f"✓ {label}")
+        elif result == "partial":
+            lines.append(f"⚠ {label} (partial)")
         elif result == "skipped":
             lines.append(f"– {label} (not used on this robot)")
         else:

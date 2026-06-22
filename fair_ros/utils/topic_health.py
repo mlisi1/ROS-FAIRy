@@ -4,17 +4,20 @@ Produces the HealthWarning dicts defined in specs/data_model.md. Every warning
 carries a pre-rendered ``plain_text`` sentence; UI layers must display that
 string and never the raw numbers (CLAUDE.md UI rules).
 
-Timestamp-level gap detection works on sqlite3 bags by querying the .db3
-files directly. MCAP bags get metadata-level checks only (never_published);
-their chunk format is not parsed in v1.
+Timestamp-level gap detection (gaps, low-rate) needs each message's receive
+time; reading those out of a bag is delegated to ``utils/bag_storage`` so this
+module never branches on storage format. sqlite3 is supported today; MCAP
+(Jazzy's default) gets metadata-level checks only (never_published) until a
+reader is implemented there. See ``utils/bag_storage`` for the extension point.
 """
 
-import sqlite3
 import statistics
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from fair_ros.utils import bag_storage, ros_distro
 
 GAP_THRESHOLD_S = 1.0
 # A gap must also dwarf the topic's own cadence, or slow topics (0.2 Hz
@@ -68,7 +71,11 @@ def parse_bag_metadata(bag_dir: Path) -> dict[str, Any] | None:
             "message_count": entry.get("message_count", 0),
         })
     return {
-        "storage_identifier": info.get("storage_identifier", "sqlite3"),
+        # rosbag2 normally records the format; when it is absent (old or
+        # hand-rolled bags) infer the recording distro's default rather than
+        # blindly assuming sqlite3.
+        "storage_identifier": info.get("storage_identifier")
+        or ros_distro.default_storage(),
         "start_s": start_ns / 1e9,
         "duration_s": duration_ns / 1e9,
         "message_count": info.get("message_count", 0),
@@ -88,43 +95,17 @@ def _signal_word(sensor: dict | None) -> str:
     return "signal" if sensor and sensor.get("type") == "gps" else "data"
 
 
-def _topic_timestamps(bag_dir: Path, rel_paths: list[str]) -> dict[str, list[float]]:
-    """Topic name -> sorted message timestamps (seconds) from sqlite3 storage."""
-    series: dict[str, list[float]] = {}
-    db_files = [bag_dir / p for p in rel_paths if str(p).endswith(".db3")]
-    if not db_files:
-        db_files = sorted(bag_dir.glob("*.db3"))
-    for db_file in db_files:
-        if not db_file.is_file():
-            continue
-        try:
-            con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
-            try:
-                rows = con.execute(
-                    "SELECT topics.name, messages.timestamp FROM messages "
-                    "JOIN topics ON messages.topic_id = topics.id").fetchall()
-            finally:
-                con.close()
-        except sqlite3.Error:
-            continue
-        for name, ts in rows:
-            series.setdefault(name, []).append(ts / 1e9)
-    for stamps in series.values():
-        stamps.sort()
-    return series
-
-
 def _gap_warnings(topic: str, sensor: dict | None, stamps: list[float],
                   bag_start: float, bag_end: float) -> list[dict]:
     if len(stamps) < 2:
         return []
-    intervals = [b - a for a, b in zip(stamps, stamps[1:])]
+    intervals = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
     median = statistics.median(intervals)
     threshold = max(GAP_THRESHOLD_S, GAP_MEDIAN_FACTOR * median)
     who = _friendly_name(sensor, topic)
     what = _signal_word(sensor)
     warnings = []
-    for prev, cur in zip(stamps, stamps[1:]):
+    for prev, cur in zip(stamps, stamps[1:], strict=False):
         gap = cur - prev
         if gap <= threshold:
             continue
@@ -212,18 +193,26 @@ def analyse_bag(bag_dir: Path, sensors: list[dict] | None = None) -> list[dict]:
                     f"data at all during this recording."),
             })
 
-    if meta["storage_identifier"] != "sqlite3":
+    reader = bag_storage.get_reader(meta["storage_identifier"])
+    if reader is None or not reader.supported:
+        # Timestamp-level analysis needs a supported storage reader. MCAP
+        # (Jazzy's default) and unknown formats fall here; the metadata-level
+        # checks above still apply. See utils/bag_storage for the MCAP hook.
         return warnings
 
     bag_start = meta["start_s"]
     bag_end = bag_start + meta["duration_s"]
-    for topic, stamps in _topic_timestamps(
-            bag_dir, meta["relative_file_paths"]).items():
-        sensor = by_topic.get(topic)
-        gaps = _gap_warnings(topic, sensor, stamps, bag_start, bag_end)
+    try:
+        series = reader.topic_timestamps(bag_dir, meta["relative_file_paths"])
+    except bag_storage.BagStorageUnsupported:
+        return warnings
+    for topic, stamps in series.items():
+        topic_sensor = by_topic.get(topic)
+        gaps = _gap_warnings(topic, topic_sensor, stamps, bag_start, bag_end)
         warnings.extend(gaps)
         if not gaps:
-            low = _low_rate_warning(topic, sensor, stamps, meta["duration_s"])
+            low = _low_rate_warning(topic, topic_sensor, stamps,
+                                    meta["duration_s"])
             if low:
                 warnings.append(low)
     return warnings

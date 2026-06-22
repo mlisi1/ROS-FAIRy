@@ -29,7 +29,10 @@ It runs only from `mission_close`, after the operator confirms "Save".
 ├── harvest/
 │   ├── harvest.json              # raw harvest as the watchdog left it
 │   ├── robot_description.urdf   # only if captured
-│   └── tf_static.json            # only if captured
+│   ├── tf_static.json            # only if captured
+│   ├── pip_freeze.txt            # only if pip freeze succeeded
+│   ├── lsusb_verbose.txt         # only if lsusb -v was permitted
+│   └── dmesg_usb.txt             # only if dmesg was permitted
 ├── calibrations/
 │   └── camera_front_intrinsics.yaml   # copied, sha256 recorded in manifest
 └── docker/
@@ -51,9 +54,29 @@ Fallback: if `rename` raises `EXDEV` (someone mounted archive elsewhere), fall
 back to copy-then-delete per bag: `shutil.copytree` → verify total size matches
 → delete spool original. The progress bar in `mission_close` covers this path.
 
+Before the move, the assembler hashes every file in each bag and records the
+digests in `bags[].file_sha256` (bag-relative path → sha256). Hashing the spool
+copy is safe — `rename` and the EXDEV copy-fallback both preserve bytes — and
+lets `ros2 fair verify` detect byte-level bag modification later.
+
 Small files (calibrations, compose files, harvest artifacts) are **copied**, not
 moved — their originals belong to the robot's live configuration. Each copy gets
 a sha256 recorded in the manifest (`calibrations[].sha256`).
+
+## Raw harvest artifacts
+
+Mirroring the Docker pattern, bulky raw text captured at harvest time lives in
+`harvest.json` (not the manifest) and is extracted to plain files by the
+assembler. Each is written only when the corresponding source produced data;
+absent sources leave no file (no empty placeholders):
+
+- `harvest/pip_freeze.txt` — from `raw_python_env.pip_freeze`.
+- `harvest/lsusb_verbose.txt` — from `raw_hardware.lsusb_verbose`.
+- `harvest/dmesg_usb.txt` — from `raw_hardware.dmesg_usb` (already filtered to
+  USB/video/tty/camera/serial/sensor lines by the harvester).
+
+The structured `PythonEnv` and `hardware_devices[]` summaries in
+`mission_record.json` never contain these raw blobs.
 
 ## Docker snapshotting
 

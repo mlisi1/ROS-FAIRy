@@ -4,7 +4,6 @@ from unittest import mock
 from rich.console import Console
 
 from fair_ros.manifest import builder
-from fair_ros.manifest.schema import MissionRecord
 from fair_ros.ui import briefing, review, status
 
 
@@ -110,10 +109,11 @@ def test_status_lines(fair_dirs):
 
     lines = status.harvest_lines({"harvest_status": {
         "ros_graph": "failed", "docker_info": "skipped",
-        "system_info": "ok"}})
+        "system_info": "ok", "hardware_devices": "partial"}})
     assert "✗ software versions and settings — will keep trying" in lines
     assert "– container software (not used on this robot)" in lines
     assert "✓ computer details" in lines
+    assert "⚠ connected hardware (partial)" in lines
 
 
 def test_show_status_renders(fair_dirs):

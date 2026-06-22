@@ -5,12 +5,13 @@ import json
 from rich.console import Console
 
 from fair_ros.manifest import builder
-from fair_ros.subcommands import VerbExtension
+from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui import status as status_ui
 from fair_ros.watchdog import watchdog as wd
 
 
 def run(args, console: Console | None = None) -> int:
+    _configure_logging(getattr(args, "debug", False))
     console = console or Console()
     state = wd.read_state()
     context = builder.load_spool()[1]
@@ -28,6 +29,9 @@ class MissionStatusVerb(VerbExtension):
         parser.add_argument(
             "--json", action="store_true",
             help="machine-readable output for scripts")
+        parser.add_argument(
+            "--debug", action="store_true",
+            help="verbose logging to stderr (for engineers)")
 
     def main(self, *, args):
         return run(args)

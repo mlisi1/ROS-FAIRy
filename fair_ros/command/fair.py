@@ -5,7 +5,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only outside ROS
     add_subparsers_on_demand = None
 
-    class CommandExtension:
+    class CommandExtension:  # type: ignore[no-redef]
         def add_arguments(self, parser, cli_name):
             pass
 
@@ -24,5 +24,5 @@ class FairCommand(CommandExtension):
         if not hasattr(args, "_verb"):
             self._subparser.print_help()
             return 0
-        extension = getattr(args, "_verb")
+        extension = args._verb
         return extension.main(args=args)

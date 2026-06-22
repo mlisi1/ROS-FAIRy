@@ -7,17 +7,17 @@ either doesn't exist or is complete.
 """
 
 import errno
-import hashlib
 import json
 import re
 import shutil
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from fair_ros.manifest.schema import MissionRecord
 from fair_ros.archive import index, ro_crate
+from fair_ros.manifest.schema import MissionRecord
 from fair_ros.utils import fsio, paths
 
 
@@ -43,12 +43,12 @@ def archive_name(record: MissionRecord) -> str:
     return name
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _bag_file_hashes(bag_dir: Path) -> dict[str, str]:
+    """Bag-relative file path -> sha256 for every file in the bag directory."""
+    return {
+        f.relative_to(bag_dir).as_posix(): fsio.sha256_file(f)
+        for f in sorted(bag_dir.rglob("*")) if f.is_file()
+    }
 
 
 def _move_bag(src: Path, dest: Path,
@@ -92,6 +92,25 @@ def _render_readme(record: MissionRecord, warnings: list[str]) -> str:
     ]
     if record.intent.notes:
         lines += ["", f"**Notes:** {record.intent.notes}"]
+    if record.hardware_devices:
+        devices = record.hardware_devices
+        with_serial = [d for d in devices if d.serial_number]
+        named = []
+        for d in devices:
+            label = d.product_name or d.vendor_name
+            if label and label not in named:
+                named.append(label)
+        lines += ["", "## Connected hardware", "",
+                  f"- {len(devices)} device(s) were detected when the mission "
+                  "started; the full list is in mission_record.json."]
+        if named:
+            shown = ", ".join(named[:8])
+            more = f", and {len(named) - 8} more" if len(named) > 8 else ""
+            lines += [f"- Recognised devices: {shown}{more}."]
+        if with_serial:
+            lines += [f"- {len(with_serial)} of these record a serial number. "
+                      "**Serial numbers can identify a specific physical unit** "
+                      "— consider this before sharing the archive."]
     all_warnings = warnings + [w.plain_text for b in record.bags
                                for w in b.health_warnings]
     if all_warnings:
@@ -155,6 +174,31 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
                         "name": "Raw harvest data",
                         "encodingFormat": "application/json"}]
         fsio.atomic_write_json(harvest_dir / "harvest.json", harvest_doc)
+        raw_py = harvest_doc.get("raw_python_env") or {}
+        pip_freeze = raw_py.get("pip_freeze")
+        if pip_freeze:
+            (harvest_dir / "pip_freeze.txt").write_text(pip_freeze,
+                                                        encoding="utf-8")
+            extra_files.append({"id": "harvest/pip_freeze.txt",
+                                 "name": "Python package freeze",
+                                 "encodingFormat": "text/plain"})
+
+        raw_hw = harvest_doc.get("raw_hardware") or {}
+        lsusb_v = raw_hw.get("lsusb_verbose")
+        if lsusb_v:
+            (harvest_dir / "lsusb_verbose.txt").write_text(lsusb_v,
+                                                           encoding="utf-8")
+            extra_files.append({"id": "harvest/lsusb_verbose.txt",
+                                 "name": "USB device descriptors",
+                                 "encodingFormat": "text/plain"})
+        dmesg_usb = raw_hw.get("dmesg_usb")
+        if dmesg_usb:
+            (harvest_dir / "dmesg_usb.txt").write_text(dmesg_usb,
+                                                        encoding="utf-8")
+            extra_files.append({"id": "harvest/dmesg_usb.txt",
+                                 "name": "Kernel hardware messages",
+                                 "encodingFormat": "text/plain"})
+
         if record.ros_graph.robot_description:
             (harvest_dir / "robot_description.urdf").write_text(
                 record.ros_graph.robot_description)
@@ -179,7 +223,7 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
             dest = cal_dir / source.name
             shutil.copy2(source, dest)
             cal.archived_path = f"calibrations/{source.name}"
-            cal.sha256 = _sha256(dest)
+            cal.sha256 = fsio.sha256_file(dest)
 
         raw_inspect = harvest_doc.get("raw_docker_inspect") or []
         if raw_inspect:
@@ -209,9 +253,12 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
                     "name": f"Compose file ({project})",
                     "encodingFormat": "application/yaml"})
 
-        # Crate-relative bag paths + assembly provenance, then manifests
-        for bag in record.bags:
-            bag.path = f"bags/{Path(bag.path).name}"
+        # Crate-relative bag paths + per-file checksums (the bag is moved
+        # verbatim, so hashing the spool copy pins the archived bytes) +
+        # assembly provenance, then manifests.
+        for bag, spool_bag in zip(record.bags, spool_bags, strict=True):
+            bag.file_sha256 = _bag_file_hashes(spool_bag)
+            bag.path = f"bags/{spool_bag.name}"
         record.provenance.assembled_at = datetime.now(timezone.utc)
 
         from fair_ros.manifest import builder

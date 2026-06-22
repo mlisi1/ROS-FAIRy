@@ -1,8 +1,33 @@
+import os
+import shutil
 import sqlite3
 import textwrap
 from pathlib import Path
 
 import pytest
+
+
+def _ros_available() -> bool:
+    """A sourced ROS 2 environment: ros2 on PATH and $ROS_DISTRO set."""
+    return shutil.which("ros2") is not None and bool(os.environ.get("ROS_DISTRO"))
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip `ros`-marked tests when ROS isn't sourced.
+
+    They are deselected by default (pyproject `addopts = -m "not ros"`); this
+    only fires when a user explicitly runs `pytest -m ros` on a box without a
+    sourced ROS 2 environment, so they skip with a clear reason instead of
+    failing.
+    """
+    if _ros_available():
+        return
+    skip = pytest.mark.skip(
+        reason="requires a sourced ROS 2 environment (ros2 on PATH + "
+               "$ROS_DISTRO); see docs/real-robot-smoke-test.md")
+    for item in items:
+        if "ros" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture
@@ -79,6 +104,49 @@ def make_bag(bag_dir: Path, topics: dict[str, list[float]],
     con.commit()
     con.close()
 
+    _write_metadata(bag_dir, topics, types, storage, db_name, start, end)
+    return bag_dir
+
+
+def make_mcap_bag(bag_dir: Path, topics: dict[str, list[float]],
+                  types: dict[str, str] | None = None) -> Path:
+    """Create a rosbag2-shaped bag dir backed by a real ``.mcap`` file.
+
+    Requires the optional ``mcap`` package; tests should ``importorskip`` it.
+    topics: topic name -> message timestamps in seconds (epoch).
+    """
+    from mcap.writer import Writer
+
+    bag_dir.mkdir(parents=True, exist_ok=True)
+    types = types or {}
+    all_ts = [t for stamps in topics.values() for t in stamps]
+    start = min(all_ts) if all_ts else 0.0
+    end = max(all_ts) if all_ts else 0.0
+
+    mcap_name = f"{bag_dir.name}_0.mcap"
+    with open(bag_dir / mcap_name, "wb") as handle:
+        writer = Writer(handle)
+        writer.start()
+        for name, stamps in topics.items():
+            schema_id = writer.register_schema(
+                name=types.get(name, "std_msgs/msg/Empty"),
+                encoding="ros2msg", data=b"")
+            channel_id = writer.register_channel(
+                topic=name, message_encoding="cdr", schema_id=schema_id)
+            for ts in stamps:
+                ns = int(ts * 1e9)
+                writer.add_message(channel_id=channel_id, log_time=ns,
+                                   data=b"", publish_time=ns)
+        writer.finish()
+
+    _write_metadata(bag_dir, topics, types, "mcap", mcap_name, start, end)
+    return bag_dir
+
+
+def _write_metadata(bag_dir: Path, topics: dict[str, list[float]],
+                    types: dict[str, str], storage: str, rel_file: str,
+                    start: float, end: float) -> None:
+    all_ts = [t for stamps in topics.values() for t in stamps]
     topic_entries = "\n".join(
         f"    - topic_metadata:\n"
         f"        name: {name}\n"
@@ -91,7 +159,7 @@ def make_bag(bag_dir: Path, topics: dict[str, list[float]],
           version: 5
           storage_identifier: {storage}
           relative_file_paths:
-            - {db_name}
+            - {rel_file}
           duration:
             nanoseconds: {int((end - start) * 1e9)}
           starting_time:
@@ -99,4 +167,3 @@ def make_bag(bag_dir: Path, topics: dict[str, list[float]],
           message_count: {len(all_ts)}
           topics_with_message_count:
         """) + topic_entries + "\n")
-    return bag_dir
