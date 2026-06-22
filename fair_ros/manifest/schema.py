@@ -163,6 +163,9 @@ class Provenance(_Model):
     arch: str = ""
     field_confidence: dict[str, str] = Field(default_factory=dict)
     harvest_status: dict[str, str] = Field(default_factory=dict)
+    # Overall data-quality verdict from manifest/quality.assess at close time:
+    # "ok" | "degraded" | "poor". None for records written before 1.0.
+    data_quality: str | None = None
 
 
 class MissionRecord(_Model):

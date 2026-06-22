@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS missions (
     warning_count     INTEGER NOT NULL DEFAULT 0,
     robot_name        TEXT,
     fair_ros_version  TEXT,
-    schema_version    TEXT NOT NULL
+    schema_version    TEXT NOT NULL,
+    data_quality      TEXT                -- ok | degraded | poor | NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_missions_created  ON missions(created_at DESC);
@@ -148,9 +149,11 @@ CREATE INDEX IF NOT EXISTS idx_missions_location ON missions(location COLLATE NO
 
 CREATE TABLE IF NOT EXISTS meta (        -- schema migrations
     key TEXT PRIMARY KEY, value TEXT NOT NULL
-);  -- row ('db_version', '1')
+);  -- row ('db_version', '2')
 ```
 
 `index.py` API: `insert(record, archive_path)`, `query(filters) -> rows`,
 `reindex(archive_root)`. All values come from the `MissionRecord`; the index
 never stores anything not recoverable from `mission_record.json` files.
+`_connect()` migrates older databases in place (e.g. adds `data_quality` to a
+v1 table) so an existing index keeps working after an upgrade.

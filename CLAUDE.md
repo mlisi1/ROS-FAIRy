@@ -83,6 +83,7 @@ fair-ros/
 │   ├── manifest/
 │   │   ├── builder.py               ← merges harvest + user input → manifest
 │   │   ├── validator.py             ← checks required fields are present
+│   │   ├── quality.py               ← data-quality verdict (ok/degraded/poor)
 │   │   └── schema.py                ← Pydantic models for all record types
 │   ├── archive/
 │   │   ├── assembler.py             ← builds RO-Crate directory structure
@@ -219,6 +220,10 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
 - `builder.py` merges `harvest.json` + `mission_context.json` → `MissionRecord`
 - All Pydantic models in `schema.py`; validation in `validator.py`
 - Missing required fields cause a clear, plain-language error — never a traceback
+- `quality.py` grades a finished record `ok`/`degraded`/`poor` (no ROS context,
+  unusable bag clock, etc.); `mission_close` shows the verdict, makes a `poor`
+  save deliberate (default No), and stores it in `provenance.data_quality` and
+  the index so degraded missions are findable in `ros2 fair list`
 
 ### Archive (`archive/`)
 - `assembler.py` creates the RO-Crate directory under `/var/fair-ros/archive/`

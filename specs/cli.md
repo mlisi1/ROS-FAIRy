@@ -139,15 +139,28 @@ The single save/discard decision.
    ask the corresponding `mission_start` questions inline, same wording.
 3. **Validate** via `manifest/validator.py`. Remaining failures print one
    plain-language line each and exit 1.
-4. **Summary panel** (rich), in order:
+4. **Grade** the built record with `manifest/quality.assess` → `ok` /
+   `degraded` / `poor`, stored in `provenance.data_quality`. `poor` means core
+   content is missing (no ROS context captured, or all recordings have an
+   unusable clock); `degraded` means usable with gaps (some sensors, some
+   recordings).
+5. **Summary panel** (rich), in order:
+   - When not `ok`: a coloured **Data quality** header (INCOMPLETE / POOR) and
+     its plain-language reasons; the panel border turns yellow/red.
    - Mission title line: goal, location, date.
    - Operator and robot names.
-   - Recording: bag count, total duration ("42 minutes"), total size ("3.1 GB").
+   - Recording: bag count, total duration ("42 minutes" or "length unknown"),
+     total size ("3.1 GB").
    - Sensors: one line per declared sensor with ✓ or a warning glyph.
    - **Warnings**, each as its pre-rendered `plain_text` from `health_warnings`,
      plus harvest-level warnings ("I couldn't capture the software versions
      because ROS wasn't reachable", "This robot hasn't been set up yet…").
-5. **Decision** — "Save this mission? [Y/n]"
+6. **Decision**:
+   - Normal mission — "Save this mission? [Y/n]" (default Yes).
+   - `poor` mission — the save prompt instead defaults to **No** and is worded as
+     a caution ("This recording is missing important data (see above). Save it
+     anyway? [y/N]"), so a near-empty recording can't be archived by reflexively
+     pressing Enter.
    - **Yes** → call `archive/assembler.py` with a rich progress bar (bags can be
      gigabytes). On success: "Mission saved: <archive dir name>". Spool is now
      empty. Exit 0.
@@ -155,11 +168,15 @@ The single save/discard decision.
      - Yes → delete spool contents, "Recording discarded." Exit 0.
      - No → "Nothing was changed — the recording is still in the spool." Exit 0
        (the operator can rerun mission_close later).
-6. Assembly failure → spool left intact, plain-language error naming the cause
+7. Assembly failure → spool left intact, plain-language error naming the cause
    (disk full, permissions), exit 1. Never half-archived (see `specs/archive.md`).
 
+`data_quality` is also written to the SQLite index, so `ros2 fair list` flags
+degraded/poor missions and `--json` exposes the field.
+
 Warning-generation logic lives in `topic_health.py` (per-bag) and `builder.py`
-(harvest-level); `ui/review.py` only renders pre-built strings.
+(harvest-level); the quality verdict in `manifest/quality.py`; `ui/review.py`
+only renders pre-built strings.
 
 ---
 

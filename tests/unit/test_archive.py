@@ -354,3 +354,33 @@ def test_reindex_rebuilds(fair_dirs):
     assert index.reindex() == 1
     rows, total = index.query()
     assert rows[0]["archive_path"] == str(final)
+
+
+def test_index_persists_data_quality(fair_dirs):
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    record.provenance.data_quality = "poor"
+    index.insert(record, paths.archive_dir() / "x")
+    rows, _ = index.query()
+    assert rows[0]["data_quality"] == "poor"
+
+
+def test_index_migrates_pre_v2_database(fair_dirs):
+    import sqlite3
+    # A v1 database has no data_quality column; _connect must add it.
+    paths.index_db_path().parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(paths.index_db_path())
+    con.execute("CREATE TABLE missions (mission_id TEXT PRIMARY KEY, "
+                "created_at TEXT, operator TEXT, location TEXT, goal TEXT, "
+                "archive_path TEXT UNIQUE, duration_s REAL, size_bytes INTEGER, "
+                "bag_count INTEGER, warning_count INTEGER, robot_name TEXT, "
+                "fair_ros_version TEXT, schema_version TEXT)")
+    con.commit()
+    con.close()
+
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    record.provenance.data_quality = "degraded"
+    index.insert(record, paths.archive_dir() / "x")  # must not raise
+    rows, _ = index.query()
+    assert rows[0]["data_quality"] == "degraded"

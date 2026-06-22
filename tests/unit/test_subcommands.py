@@ -290,6 +290,74 @@ def test_setup_ask_robot_validates_email(fair_dirs):
     assert config["owner"]["contact_email"] == "fleet@example.org"
 
 
+# --- data quality / degradation gate -----------------------------------------
+
+def test_quality_ok_for_healthy_mission(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    assert quality.assess(record, harvest).level == quality.OK
+
+
+def test_quality_poor_without_ros_context(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    harvest["ros_graph"]["nodes"] = []
+    harvest["provenance"]["harvest_status"]["ros_graph"] = "failed"
+    record = builder.build(harvest, context)
+    q = quality.assess(record, harvest)
+    assert q.level == quality.POOR and any("software" in r for r in q.reasons)
+
+
+def test_quality_poor_when_all_bags_unusable(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    for b in record.bags:
+        b.duration_s = None
+    assert quality.assess(record, harvest).level == quality.POOR
+
+
+def test_quality_degraded_when_sensor_not_detected(fair_dirs):
+    from fair_ros.manifest import quality
+    harvest, context = _spool(fair_dirs)
+    record = builder.build(harvest, context)
+    for s in record.sensors:
+        s.detected_at_start = False
+    assert quality.assess(record, harvest).level == quality.DEGRADED
+
+
+def test_mission_close_gates_poor_mission(fair_dirs):
+    # Spool harvest looks like no ROS context was captured -> poor.
+    harvest, _ = _spool(fair_dirs)
+    harvest["ros_graph"]["nodes"] = []
+    harvest["provenance"]["harvest_status"]["ros_graph"] = "failed"
+    fsio.atomic_write_json(paths.harvest_json_path(), harvest)
+
+    captured = {}
+
+    def fake_confirm(console=None, *, risky=False):
+        captured["risky"] = risky
+        return "keep"
+
+    with mock.patch.object(mission_close.review, "confirm_save", fake_confirm):
+        assert mission_close.run(ARGS, console=_console()) == 0
+    assert captured["risky"] is True
+
+
+def test_mission_close_does_not_gate_healthy_mission(fair_dirs):
+    _spool(fair_dirs)
+    captured = {}
+
+    def fake_confirm(console=None, *, risky=False):
+        captured["risky"] = risky
+        return "keep"
+
+    with mock.patch.object(mission_close.review, "confirm_save", fake_confirm):
+        assert mission_close.run(ARGS, console=_console()) == 0
+    assert captured["risky"] is False
+
+
 # --- export ------------------------------------------------------------------
 
 def _make_archive(fair_dirs):

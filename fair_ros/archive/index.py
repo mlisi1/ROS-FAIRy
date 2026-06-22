@@ -13,7 +13,7 @@ from typing import Any
 from fair_ros.manifest.schema import MissionRecord
 from fair_ros.utils import paths
 
-DB_VERSION = "1"
+DB_VERSION = "2"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS missions (
@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS missions (
     warning_count     INTEGER NOT NULL DEFAULT 0,
     robot_name        TEXT,
     fair_ros_version  TEXT,
-    schema_version    TEXT NOT NULL
+    schema_version    TEXT NOT NULL,
+    data_quality      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_missions_created
     ON missions(created_at DESC);
@@ -43,13 +44,27 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+# Column order is the single source of truth for the positional INSERTs below.
+_COLUMNS = (
+    "mission_id", "created_at", "operator", "location", "goal", "archive_path",
+    "duration_s", "size_bytes", "bag_count", "warning_count", "robot_name",
+    "fair_ros_version", "schema_version", "data_quality",
+)
+_INSERT = (f"INSERT OR REPLACE INTO missions ({', '.join(_COLUMNS)}) VALUES "
+           f"({', '.join('?' for _ in _COLUMNS)})")
+
+
 def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(paths.index_db_path(), timeout=5.0)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode = WAL")
     con.execute("PRAGMA busy_timeout = 5000")
     con.executescript(_SCHEMA)
-    con.execute("INSERT OR IGNORE INTO meta VALUES ('db_version', ?)",
+    # Migrate pre-2 databases: add columns the current schema expects.
+    existing = {row[1] for row in con.execute("PRAGMA table_info(missions)")}
+    if "data_quality" not in existing:
+        con.execute("ALTER TABLE missions ADD COLUMN data_quality TEXT")
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('db_version', ?)",
                 (DB_VERSION,))
     return con
 
@@ -69,15 +84,13 @@ def _row_from_record(record: MissionRecord, archive_path: Path) -> tuple:
         record.robot.name if record.robot else None,
         record.provenance.fair_ros_version,
         record.schema_version,
+        record.provenance.data_quality,
     )
 
 
 def insert(record: MissionRecord, archive_path: Path) -> None:
     with _connect() as con:
-        con.execute(
-            "INSERT OR REPLACE INTO missions VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            _row_from_record(record, archive_path))
+        con.execute(_INSERT, _row_from_record(record, archive_path))
 
 
 def query(operator: str | None = None, location: str | None = None,
@@ -121,9 +134,6 @@ def reindex(archive_root: Path | None = None) -> int:
                     json.loads(record_file.read_text()))
             except Exception:
                 continue
-            con.execute(
-                "INSERT OR REPLACE INTO missions VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _row_from_record(record, record_file.parent))
+            con.execute(_INSERT, _row_from_record(record, record_file.parent))
             count += 1
     return count
