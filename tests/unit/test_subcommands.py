@@ -49,6 +49,36 @@ def test_mission_start_writes_context(fair_dirs):
     assert "mission_record" in console.file.getvalue()
 
 
+def test_mission_start_snapshots_session_ros_env(fair_dirs):
+    """The recording shell's ROS env is handed to the watchdog (issue #29)."""
+    from fair_ros.utils import ros_env
+    answers = {"operator_name": "Jane", "goal": "g", "location_name": "L",
+               "environment": None, "notes": None}
+    with mock.patch.object(mission_start.briefing, "ask_briefing",
+                           return_value=answers), \
+            mock.patch.dict(os.environ,
+                            {"ROS_DISTRO": "jazzy", "ROS_DOMAIN_ID": "9"}):
+        assert mission_start.run(ARGS, console=_console()) == 0
+    env = ros_env.read_file(paths.session_env_path())
+    assert env.get("ROS_DISTRO") == "jazzy" and env.get("ROS_DOMAIN_ID") == "9"
+
+
+def test_mission_record_snapshots_session_ros_env(fair_dirs):
+    _spool(fair_dirs)
+    from fair_ros.utils import ros_env
+    with mock.patch.object(mission_record.shutil, "which",
+                           return_value="/usr/bin/ros2"), \
+            mock.patch.object(mission_record.clock, "is_synchronized",
+                              return_value=True), \
+            mock.patch.dict(os.environ, {"ROS_DISTRO": "jazzy",
+                                         "ROS_DOMAIN_ID": "9"}), \
+            mock.patch.object(mission_record.subprocess, "Popen") as popen:
+        popen.return_value.wait.return_value = 0
+        assert mission_record.run(ARGS, console=_console()) == 0
+    env = ros_env.read_file(paths.session_env_path())
+    assert env.get("ROS_DOMAIN_ID") == "9"
+
+
 def test_mission_start_keeps_existing_when_declined(fair_dirs):
     existing = builder.new_mission_context("Sam", "Old goal", "Old place")
     fsio.atomic_write_json(paths.mission_context_path(), existing)
@@ -503,6 +533,37 @@ def test_doctor_service_harvest_distinguishes_service_context():
         assert doctor._check_service_harvest()["status"] == doctor.SKIP
 
 
+def test_doctor_service_env_missing_file_fails(fair_dirs):
+    # watchdog.env doesn't exist → the service started blind.
+    c = doctor._check_service_env()
+    assert c["status"] == doctor.FAIL and "ros2 fair setup" in c["hint"]
+
+
+def test_doctor_service_env_no_distro_fails(fair_dirs):
+    from fair_ros.utils import ros_env
+    ros_env.write_file(paths.watchdog_env_path(), {"PATH": "/usr/bin"})
+    assert doctor._check_service_env()["status"] == doctor.FAIL
+
+
+def test_doctor_service_env_domain_mismatch_warns(fair_dirs):
+    from fair_ros.utils import ros_env
+    ros_env.write_file(paths.watchdog_env_path(),
+                       {"ROS_DISTRO": "jazzy", "ROS_DOMAIN_ID": "7"})
+    with mock.patch.dict(doctor.os.environ, {"ROS_DOMAIN_ID": "42"}):
+        c = doctor._check_service_env()
+    assert c["status"] == doctor.WARN and "ROS_DOMAIN_ID" in c["detail"]
+
+
+def test_doctor_service_env_matches_is_ok(fair_dirs):
+    from fair_ros.utils import ros_env
+    ros_env.write_file(paths.watchdog_env_path(),
+                       {"ROS_DISTRO": "jazzy", "ROS_DOMAIN_ID": "7",
+                        "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp"})
+    env = {"ROS_DOMAIN_ID": "7", "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp"}
+    with mock.patch.dict(doctor.os.environ, env):
+        assert doctor._check_service_env()["status"] == doctor.OK
+
+
 def test_doctor_check_that_raises_becomes_fail():
     def boom():
         raise RuntimeError("nope")
@@ -555,13 +616,39 @@ def test_setup_captures_ros_environment(fair_dirs):
     assert "HOME=" not in text
 
 
-def test_setup_warns_when_ros_environment_missing(fair_dirs):
+def test_setup_fails_when_ros_environment_missing(fair_dirs):
+    """No captured ROS env must abort setup (not just warn): the service would
+    otherwise start blind and harvest an empty graph forever (issue #29)."""
     keep = {"FAIR_ROS_CONFIG_DIR": os.environ["FAIR_ROS_CONFIG_DIR"]}
     console = _console()
     with mock.patch.dict(setup_cmd.os.environ, {**keep, "PATH": "/usr/bin"},
                          clear=True):
-        setup_cmd.write_watchdog_env(console)
-    assert "ROS_DISTRO is unset" in console.file.getvalue()
+        assert setup_cmd._check_ros_visible(console) is False
+    out = console.file.getvalue()
+    assert "ROS_DISTRO is unset" in out and "ros2 fair setup" in out
+
+
+def test_setup_fails_when_graph_not_visible(fair_dirs):
+    """ROS sourced but no nodes visible (wrong domain/RMW, software down) must
+    abort: the watchdog would harvest an empty graph."""
+    keep = {"FAIR_ROS_CONFIG_DIR": os.environ["FAIR_ROS_CONFIG_DIR"]}
+    console = _console()
+    with mock.patch.dict(setup_cmd.os.environ,
+                         {**keep, "ROS_DISTRO": "jazzy", "PATH": "/usr/bin"},
+                         clear=True), \
+            mock.patch.object(setup_cmd, "_ros2_list", return_value=[]):
+        assert setup_cmd._check_ros_visible(console) is False
+    assert "no nodes are visible" in console.file.getvalue()
+
+
+def test_setup_ros_visible_passes(fair_dirs):
+    keep = {"FAIR_ROS_CONFIG_DIR": os.environ["FAIR_ROS_CONFIG_DIR"]}
+    with mock.patch.dict(setup_cmd.os.environ,
+                         {**keep, "ROS_DISTRO": "jazzy", "PATH": "/usr/bin"},
+                         clear=True), \
+            mock.patch.object(setup_cmd, "_ros2_list",
+                              return_value=["/robot_node"]):
+        assert setup_cmd._check_ros_visible(_console()) is True
 
 
 def test_setup_written_identity_is_harvestable(fair_dirs):

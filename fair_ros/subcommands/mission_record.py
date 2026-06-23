@@ -10,7 +10,7 @@ from rich.prompt import Confirm
 
 from fair_ros.harvest import robot_identity
 from fair_ros.subcommands import VerbExtension, _configure_logging
-from fair_ros.utils import clock, paths
+from fair_ros.utils import clock, paths, ros_env
 
 MIN_FREE_BYTES = 1 << 30  # 1 GiB
 
@@ -50,6 +50,10 @@ def run(args, console: Console | None = None) -> int:
         return 1
 
     paths.bags_dir().mkdir(parents=True, exist_ok=True)
+    # Refresh the watchdog's view with this shell's ROS environment right before
+    # recording — the recorder always has the correct env; the watchdog only has
+    # a frozen copy. This is the shell whose graph the watchdog must match (#29).
+    ros_env.write_file(paths.session_env_path(), ros_env.capture())
     free = shutil.disk_usage(paths.spool_dir()).free
     if free < MIN_FREE_BYTES:
         proceed = Confirm.ask(

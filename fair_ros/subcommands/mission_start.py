@@ -9,7 +9,7 @@ from rich.prompt import Confirm
 from fair_ros.manifest import builder
 from fair_ros.subcommands import VerbExtension, _configure_logging
 from fair_ros.ui import briefing
-from fair_ros.utils import clock, fsio, paths
+from fair_ros.utils import clock, fsio, paths, ros_env
 from fair_ros.watchdog import watchdog as wd
 
 
@@ -68,6 +68,10 @@ def run(args, console: Console | None = None) -> int:
         environment=answers["environment"],
         notes=answers["notes"])
     paths.spool_dir().mkdir(parents=True, exist_ok=True)
+    # Hand the live recording shell's ROS environment to the watchdog so its
+    # harvest sees the same DDS partition / overlay as this session, even if the
+    # frozen watchdog.env snapshot has drifted (issue #29).
+    ros_env.write_file(paths.session_env_path(), ros_env.capture())
     fsio.atomic_write_json(context_path, context)
     console.print(Panel("Mission briefing saved. Start recording with: "
                         "[bold]ros2 fair mission_record[/bold]",

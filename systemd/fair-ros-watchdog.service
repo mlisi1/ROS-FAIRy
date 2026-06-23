@@ -9,7 +9,10 @@ Type=simple
 # ROS_DOMAIN_ID, RMW_IMPLEMENTATION, ...). Without it the service has no ROS on
 # PATH and the graph/description harvest fails. `-` makes it optional so the
 # watchdog still starts (and watches the spool) on a robot set up before this
-# file existed. Re-run `ros2 fair setup` to (re)generate it.
+# file existed. Re-run `ros2 fair setup` to (re)generate it. At mission time the
+# watchdog also adopts the live recording shell's ROS env from
+# <spool>/session.env (written by mission_start/mission_record), so a domain or
+# RMW that drifted from this frozen snapshot still harvests the right graph.
 EnvironmentFile=-/etc/fair-ros/watchdog.env
 ExecStart=/usr/bin/python3 -m fair_ros.watchdog.watchdog
 Restart=always

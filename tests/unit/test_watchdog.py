@@ -302,6 +302,29 @@ def test_harvest_rewrite_preserves_bags(rig):
     assert len(harvest["bags"]) == 1
 
 
+def test_apply_session_env_adopts_recording_shell(fair_dirs):
+    """The watchdog adopts the recorder's ROS env so its harvest lands on the
+    same DDS partition as the session actually recording (issue #29)."""
+    from unittest import mock
+
+    from fair_ros.utils import ros_env
+    paths.spool_dir().mkdir(parents=True, exist_ok=True)
+    ros_env.write_file(paths.session_env_path(),
+                       {"ROS_DOMAIN_ID": "42", "RMW_IMPLEMENTATION": "rmw_x"})
+    dog = Watchdog(inotify=FakeINotify(), pipeline=good_pipeline,
+                   harvest_in_thread=False)
+    with mock.patch.dict(wd_mod.os.environ, {"ROS_DOMAIN_ID": "0"}, clear=False):
+        dog._apply_session_env()
+        assert wd_mod.os.environ["ROS_DOMAIN_ID"] == "42"
+        assert wd_mod.os.environ["RMW_IMPLEMENTATION"] == "rmw_x"
+
+
+def test_apply_session_env_noop_without_file(fair_dirs):
+    dog = Watchdog(inotify=FakeINotify(), pipeline=good_pipeline,
+                   harvest_in_thread=False)
+    dog._apply_session_env()  # must not raise when no session.env exists
+
+
 def test_read_state(fair_dirs):
     assert wd_mod.read_state() is None
     paths.watchdog_state_path().write_text('{"state": "IDLE"}')

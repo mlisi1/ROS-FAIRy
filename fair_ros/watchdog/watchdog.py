@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from fair_ros.manifest import builder
-from fair_ros.utils import fsio, paths, topic_health
+from fair_ros.utils import fsio, paths, ros_env, topic_health
 
 log = logging.getLogger("fair_ros.watchdog")
 
@@ -325,8 +325,23 @@ class Watchdog:
         else:
             self._harvest_once()
 
+    def _apply_session_env(self) -> None:
+        """Adopt the live recording shell's ROS env (issue #29).
+
+        ``mission_start`` / ``mission_record`` drop the recorder's ROS
+        environment in the spool; applying it over our own (which came from the
+        possibly-stale ``watchdog.env`` snapshot) puts the harvest's ``ros2``
+        subprocesses and rclpy on the same DDS partition / overlay as the
+        session actually recording. No-op when the file is absent.
+        """
+        env = ros_env.read_file(paths.session_env_path())
+        if env:
+            os.environ.update(env)
+            log.info("applied recording session ROS env (%d vars)", len(env))
+
     def _harvest_once(self) -> None:
         with self._harvest_lock:
+            self._apply_session_env()
             doc = self.pipeline()
             self._save_harvest(doc)
             status = doc["provenance"]["harvest_status"]
