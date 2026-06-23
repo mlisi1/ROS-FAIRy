@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from fair_ros.manifest import builder
-from fair_ros.utils import fsio, paths, topic_health
+from fair_ros.utils import fsio, paths, ros_env, topic_health
 
 log = logging.getLogger("fair_ros.watchdog")
 
@@ -138,6 +138,11 @@ class Watchdog:
         self._next_heartbeat: float = self.clock() + HEARTBEAT_S
         self._harvest_lock = threading.Lock()
         self._stop = threading.Event()
+        # The watchdog's own (trusted) discovery settings, from watchdog.env.
+        # A session.env that omits a key reverts to this baseline rather than
+        # leaking the previous session's value (issue #29 review #3).
+        self._base_discovery = {k: os.environ.get(k)
+                                for k in ros_env.SESSION_ADOPT_KEYS}
 
     # -- lifecycle -------------------------------------------------------
 
@@ -325,8 +330,37 @@ class Watchdog:
         else:
             self._harvest_once()
 
+    def _apply_session_env(self) -> None:
+        """Adopt the live recording shell's DDS discovery env (issue #29).
+
+        ``mission_start`` / ``mission_record`` drop the recorder's ROS
+        environment in the spool; adopting its DDS discovery keys (domain, RMW,
+        ...) over our own (which came from the possibly-stale ``watchdog.env``
+        snapshot) puts the harvest's ``ros2`` subprocesses and rclpy on the same
+        partition as the session actually recording.
+
+        Only :data:`ros_env.SESSION_ADOPT_KEYS` are honoured. ``session.env`` is
+        group-writable and this process is root, so loader paths from it are
+        never applied — they would be a privilege-escalation vector. Keys the
+        session does not set revert to the watchdog's own baseline so a previous
+        session's value never leaks into a later harvest.
+        """
+        env = ros_env.safe_session_env(ros_env.read_file(paths.session_env_path()))
+        for key in ros_env.SESSION_ADOPT_KEYS:
+            base = self._base_discovery.get(key)
+            if key in env:
+                os.environ[key] = env[key]
+            elif base is not None:
+                os.environ[key] = base
+            else:
+                os.environ.pop(key, None)
+        if env:
+            log.info("adopted recording session DDS env: %s",
+                     ", ".join(sorted(env)))
+
     def _harvest_once(self) -> None:
         with self._harvest_lock:
+            self._apply_session_env()
             doc = self.pipeline()
             self._save_harvest(doc)
             status = doc["provenance"]["harvest_status"]

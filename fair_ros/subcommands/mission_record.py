@@ -10,7 +10,7 @@ from rich.prompt import Confirm
 
 from fair_ros.harvest import robot_identity
 from fair_ros.subcommands import VerbExtension, _configure_logging
-from fair_ros.utils import clock, paths
+from fair_ros.utils import clock, paths, ros_env
 
 MIN_FREE_BYTES = 1 << 30  # 1 GiB
 
@@ -83,6 +83,12 @@ def run(args, console: Console | None = None) -> int:
     output = str(paths.bags_dir() / f"{_bag_prefix()}_{stamp}")
     command = build_record_command(output)
     console.print(f"[dim]Recording to {output} — press Ctrl-C to stop.[/dim]")
+
+    # Hand this shell's ROS environment to the watchdog now that recording is
+    # actually starting (every preflight passed) — the recorder has the correct
+    # env, the watchdog only a frozen copy it must match (#29). Written here, not
+    # earlier, so an aborted preflight never leaves a stale handoff behind.
+    ros_env.write_file(paths.session_env_path(), ros_env.capture())
 
     child = subprocess.Popen(command)
     try:

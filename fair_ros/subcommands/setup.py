@@ -19,7 +19,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from fair_ros.subcommands import VerbExtension, _configure_logging
-from fair_ros.utils import paths
+from fair_ros.utils import paths, ros_env
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SLUG_RE = re.compile(r"^[a-z0-9_]+$")
@@ -28,16 +28,16 @@ SERVICE_NAME = "fair-ros-watchdog.service"
 GROUP_NAME = "fair-ros"
 MAX_ATTEMPTS = 3
 
-# The watchdog runs as a system service with no sourced ROS environment, so we
-# snapshot the operator's ROS environment here and load it via the unit's
-# EnvironmentFile. Capture every ROS/build-tool variable plus the search paths
-# ros2 and rclpy need to find their plugins and libraries.
-ROS_ENV_PREFIXES = ("ROS_", "AMENT_", "RMW_", "COLCON_")
-ROS_ENV_NAMES = (
-    "PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "CMAKE_PREFIX_PATH",
-    "CYCLONEDDS_URI", "FASTRTPS_DEFAULT_PROFILES_FILE",
-    "FASTDDS_DEFAULT_PROFILES_FILE",
-)
+# The single fix for every "watchdog harvested nothing" failure: run setup from
+# a root shell that has ROS sourced and can see the robot. Printed wherever that
+# precondition isn't met.
+SOURCE_RECIPE = (
+    "Run setup from a root shell that has ROS sourced and can see the robot:\n"
+    "    sudo su\n"
+    "    source /opt/ros/<distro>/setup.bash   # + the overlay/env that sets "
+    "ROS_DOMAIN_ID, RMW_IMPLEMENTATION\n"
+    "    ros2 node list   # must list your robot's nodes\n"
+    "    ros2 fair setup")
 
 
 class SetupAborted(Exception):
@@ -66,15 +66,19 @@ def _existing_identity() -> dict:
         return {}
 
 
-def _live_topics(console: Console) -> list[str]:
+def _ros2_list(what: str) -> list[str]:
     try:
-        out = subprocess.run(["ros2", "topic", "list"], capture_output=True,
+        out = subprocess.run(["ros2", what, "list"], capture_output=True,
                              text=True, timeout=10)
         if out.returncode == 0:
             return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return []
+
+
+def _live_topics(console: Console) -> list[str]:
+    return _ros2_list("topic")
 
 
 def ask_robot(console: Console, current: dict) -> dict:
@@ -201,40 +205,43 @@ def create_dirs() -> None:
                 pass
 
 
-def _capture_ros_environment() -> dict[str, str]:
-    """The ROS-relevant subset of the current environment."""
-    return {
-        key: val for key, val in os.environ.items()
-        if key in ROS_ENV_NAMES or key.startswith(ROS_ENV_PREFIXES)
-    }
+def write_watchdog_env(console: Console) -> dict[str, str]:
+    """Snapshot this shell's ROS environment for the watchdog service.
 
-
-def write_watchdog_env(console: Console) -> None:
-    """Snapshot the ROS environment for the watchdog service.
-
-    Written as a systemd EnvironmentFile (``KEY=value`` per line). If ROS_DISTRO
-    is absent the operator didn't preserve their environment under sudo, so the
-    service would harvest nothing — warn loudly and tell them how to fix it.
+    Written as a systemd EnvironmentFile loaded by the unit's
+    ``EnvironmentFile=``. Returns the captured environment so the caller can
+    decide whether it is usable. Validation/abort is the caller's job
+    (:func:`_check_ros_visible`).
     """
-    env = _capture_ros_environment()
-    env_path = paths.watchdog_env_path()
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"{key}={env[key]}" for key in sorted(env)]
-    env_path.write_text("\n".join(lines) + ("\n" if lines else ""))
-    os.chmod(env_path, 0o644)
-    if "ROS_DISTRO" not in env:
+    env = ros_env.capture()
+    ros_env.write_file(paths.watchdog_env_path(), env)
+    return env
+
+
+def _check_ros_visible(console: Console) -> bool:
+    """Refuse to install a blind watchdog (issue #29 root cause).
+
+    The service inherits exactly this shell's ROS environment. If ROS_DISTRO is
+    unset (env stripped under sudo) or the robot graph isn't visible from here
+    (wrong domain/RMW, or software not started), the service would harvest an
+    empty graph at every mission — fail now with the one recipe that fixes it.
+    """
+    if "ROS_DISTRO" not in ros_env.capture():
         console.print(
-            "[yellow]Warning: no ROS environment was captured for the "
-            "background service (ROS_DISTRO is unset). The watchdog won't be "
-            "able to record software versions, the ROS graph, or the robot "
-            "description.\n"
-            "Fix: run setup from a root shell that has ROS sourced and can see "
-            "the robot:\n"
-            "    sudo su\n"
-            "    source /opt/ros/<distro>/setup.bash   # + the overlay/env that "
-            "sets ROS_DOMAIN_ID, RMW_IMPLEMENTATION\n"
-            "    ros2 node list   # must list your robot's nodes\n"
-            "    ros2 fair setup[/yellow]")
+            "[red]No ROS environment is available to capture for the "
+            "background service (ROS_DISTRO is unset). The watchdog would "
+            "record no software versions, ROS graph, or robot description.\n"
+            f"{SOURCE_RECIPE}[/red]")
+        return False
+    if not _ros2_list("node"):
+        console.print(
+            "[red]ROS is sourced but no nodes are visible (`ros2 node list` is "
+            "empty), so the watchdog would harvest an empty graph. Start the "
+            "robot software and check ROS_DOMAIN_ID / RMW_IMPLEMENTATION match "
+            "it, then re-run.\n"
+            f"{SOURCE_RECIPE}[/red]")
+        return False
+    return True
 
 
 def install_service(console: Console) -> bool:
@@ -267,13 +274,11 @@ def run(args, console: Console | None = None) -> int:
     if shutil.which("ros2") is None:
         console.print(
             "[red]ros2 is not on PATH. The watchdog snapshots this shell's ROS "
-            "environment, so it must be sourced when you run setup.\n"
-            "If you become root with `sudo su` (or `sudo -E` is blocked by "
-            "your sudoers), source ROS in the root shell first:\n"
-            "    source /opt/ros/<distro>/setup.bash   # + the overlay/env that "
-            "sets ROS_DOMAIN_ID, RMW_IMPLEMENTATION\n"
-            "    ros2 node list   # must list your robot's nodes\n"
-            "    ros2 fair setup[/red]")
+            "environment, so it must be sourced when you run setup (under "
+            "`sudo su`, or when `sudo -E` is blocked, the env is stripped).\n"
+            f"{SOURCE_RECIPE}[/red]")
+        return 1
+    if not _check_ros_visible(console):
         return 1
     if shutil.which("docker") is None:
         console.print("[yellow]Docker not found — container snapshots will "

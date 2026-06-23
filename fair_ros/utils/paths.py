@@ -53,6 +53,21 @@ def harvest_json_path() -> Path:
     return spool_dir() / "harvest.json"
 
 
+def session_env_path() -> Path:
+    """ROS environment of the live recording shell, refreshed at mission time.
+
+    Written by ``mission_start`` / ``mission_record`` (which run as the
+    operator); the watchdog adopts its DDS *discovery* keys
+    (``ros_env.SESSION_ADOPT_KEYS``) at harvest time so the service lands on the
+    same partition as the session actually recording, even if the frozen
+    ``watchdog.env`` snapshot has drifted. Lives in the spool because that is
+    group-writable; ``watchdog.env`` lives in root-owned ``/etc``. Because it is
+    group-writable, the watchdog never adopts loader paths from it (privilege
+    escalation); base PATH/overlay come only from the trusted ``watchdog.env``.
+    """
+    return spool_dir() / "session.env"
+
+
 def mission_context_path() -> Path:
     return spool_dir() / "mission_context.json"
 

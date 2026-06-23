@@ -20,10 +20,28 @@ Global rules:
 One-time, per-robot, run by an engineer (jargon is allowed here, and only here).
 Idempotent: re-running shows current values as defaults.
 
+> **Run setup from a root shell that has ROS sourced and can see the robot.**
+> The watchdog runs as a system service with **no** login shell, so setup
+> snapshots *this shell's* ROS environment into `/etc/fair-ros/watchdog.env`
+> (loaded by the unit's `EnvironmentFile=`). Becoming root with `sudo su` (or
+> when `sudo -E` is blocked) strips that environment, so source ROS *inside* the
+> root shell and confirm `ros2 node list` lists your robot's nodes before
+> running setup:
+> ```
+> sudo su
+> source /opt/ros/<distro>/setup.bash   # + the overlay that sets ROS_DOMAIN_ID / RMW
+> ros2 node list                        # must list your robot's nodes
+> ros2 fair setup
+> ```
+
 Flow:
 
 1. **Preflight** — check running as root or with sudo-able rights; check `ros2`
-   on PATH; warn (not fail) if Docker absent.
+   on PATH; warn (not fail) if Docker absent. **Fail (not warn)** if no ROS
+   environment can be captured for the service (`ROS_DISTRO` unset) or the robot
+   graph isn't visible (`ros2 node list` empty) — either means the watchdog
+   would start blind and harvest an empty graph at every mission. The error
+   prints the `sudo su` + `source` recipe above.
 2. **Robot questions** (rich prompts, defaults from existing yaml if present):
    1. Robot name — non-empty, ≤ 40 chars.
    2. Platform (make and model) — non-empty.
@@ -80,6 +98,20 @@ Questions (exactly these five, in this order):
 Then: generate `mission_id` + `created_at`, write the JSON atomically, show a
 closing panel: "Mission briefing saved. Start recording with: ros2 fair
 mission_record".
+
+**ROS-env re-snapshot.** Both `mission_start` and `mission_record` write this
+shell's ROS environment to `<spool>/session.env`. The recorder always has the
+correct environment (it *is* the operator's live shell); the watchdog only has
+the frozen `watchdog.env` snapshot, which goes blind if the operator records
+under a different `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION`. At harvest time the
+watchdog adopts `session.env`'s DDS discovery keys
+(`ros_env.SESSION_ADOPT_KEYS`) over its own, so its harvest lands on the same
+partition as the session actually recording (closes the drift that produced
+empty-graph archives). `session.env` is group-writable and the watchdog runs as
+root, so **only** discovery keys are adopted — never `PATH` / `LD_LIBRARY_PATH`
+/ `PYTHONPATH` / overlay paths, which would be a privilege-escalation vector;
+the base ROS install comes only from the root-owned `watchdog.env`. The file is
+removed when the spool is cleared at `mission_close`.
 
 ---
 
@@ -314,6 +346,7 @@ Runs these checks, each a plain-language ✓/!/✗/– line (with a `→ hint` u
 | recording assistant (watchdog) running, heartbeat fresh | ✗ fail (! if stale) |
 | ROS 2 reachable from **this shell** (`ros2 node list` non-empty) | ✗ fail (! if reachable but no nodes) |
 | ROS environment sourced here (`ROS_DISTRO` set; reports rmw/domain) | ! warn |
+| the **service's** env (`/etc/fair-ros/watchdog.env`) exists with `ROS_DISTRO`, and its `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` match this shell | ✗ fail if missing/no distro; ! warn on domain/RMW drift |
 | the **watchdog's own** last graph harvest succeeded (service-context truth — the empty-archive failure) | ✗ fail (– if it hasn't harvested yet) |
 | system clock NTP-synchronised (`utils/clock`) | ✗ fail (– if undeterminable) |
 | `mcap` available for bag timing/health | ! warn |

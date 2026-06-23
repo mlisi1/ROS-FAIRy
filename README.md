@@ -18,6 +18,19 @@ network, everything on the robot.
 
 ## Commands
 
+> **Run `setup` from a root shell with ROS sourced and the robot graph visible.**
+> The background watchdog runs as a system service with no login shell, so
+> `setup` snapshots *your shell's* ROS environment for it. `sudo su` strips that
+> environment, so source ROS *inside* the root shell and check `ros2 node list`
+> first — `setup` now fails (rather than warning) if it can't capture a ROS
+> environment or sees no nodes:
+> ```
+> sudo su
+> source /opt/ros/<distro>/setup.bash   # + the overlay that sets ROS_DOMAIN_ID / RMW
+> ros2 node list                        # must list your robot's nodes
+> ros2 fair setup
+> ```
+
 ```
 ros2 fair setup            # one-time robot setup (engineer, needs sudo)
 ros2 fair doctor           # preflight: is the robot ready to capture a mission?
@@ -45,8 +58,18 @@ The tool actively prevents the field failures that produce useless data:
 
 - **Preflight check** — `ros2 fair doctor` reports a single READY / NOT READY
   verdict: watchdog running, ROS reachable (from your shell *and* from the
-  background service), clock synchronised, `mcap` present, disk space, robot
-  identity. Run it before a mission instead of discovering problems after.
+  background service), the service's own ROS environment present and on the same
+  `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` as you, clock synchronised, `mcap`
+  present, disk space, robot identity. Run it before a mission instead of
+  discovering problems after.
+- **Service-env reconciliation** — the watchdog starts from a frozen ROS-env
+  snapshot taken at `setup`, which goes blind if you later record under a
+  different domain or RMW. `mission_start` / `mission_record` hand the live
+  recording shell's DDS discovery settings (domain, RMW) to the watchdog, so its
+  background harvest always sees the same ROS graph the recorder does — no more
+  empty-graph archives from env drift. (Only discovery keys are adopted from
+  that group-writable handoff, never loader paths, so it can't be used to run
+  code as the root service.)
 - **Clock guardrail** — an unsynchronised system clock stamps messages near the
   epoch, making recordings unplayable. `mission_record` refuses to record on a
   bad clock unless you confirm; `mission_start` warns.
