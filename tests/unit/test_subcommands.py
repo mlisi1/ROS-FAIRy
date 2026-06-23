@@ -124,6 +124,8 @@ def test_mission_record_aborts_on_unsynced_clock(fair_dirs):
         assert mission_record.run(ARGS, console=console) == 0
     ask.assert_called_once()          # the clock prompt
     popen.assert_not_called()         # recording never started
+    # An aborted preflight must not leave a stale env handoff behind (#29 #4).
+    assert not paths.session_env_path().exists()
 
 
 def test_build_record_command_default(fair_dirs):

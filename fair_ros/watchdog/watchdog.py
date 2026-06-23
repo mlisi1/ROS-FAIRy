@@ -138,6 +138,11 @@ class Watchdog:
         self._next_heartbeat: float = self.clock() + HEARTBEAT_S
         self._harvest_lock = threading.Lock()
         self._stop = threading.Event()
+        # The watchdog's own (trusted) discovery settings, from watchdog.env.
+        # A session.env that omits a key reverts to this baseline rather than
+        # leaking the previous session's value (issue #29 review #3).
+        self._base_discovery = {k: os.environ.get(k)
+                                for k in ros_env.SESSION_ADOPT_KEYS}
 
     # -- lifecycle -------------------------------------------------------
 
@@ -336,12 +341,20 @@ class Watchdog:
 
         Only :data:`ros_env.SESSION_ADOPT_KEYS` are honoured. ``session.env`` is
         group-writable and this process is root, so loader paths from it are
-        never applied — they would be a privilege-escalation vector. No-op when
-        the file is absent or carries no discovery keys.
+        never applied — they would be a privilege-escalation vector. Keys the
+        session does not set revert to the watchdog's own baseline so a previous
+        session's value never leaks into a later harvest.
         """
         env = ros_env.safe_session_env(ros_env.read_file(paths.session_env_path()))
+        for key in ros_env.SESSION_ADOPT_KEYS:
+            base = self._base_discovery.get(key)
+            if key in env:
+                os.environ[key] = env[key]
+            elif base is not None:
+                os.environ[key] = base
+            else:
+                os.environ.pop(key, None)
         if env:
-            os.environ.update(env)
             log.info("adopted recording session DDS env: %s",
                      ", ".join(sorted(env)))
 

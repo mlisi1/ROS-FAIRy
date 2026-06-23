@@ -50,10 +50,6 @@ def run(args, console: Console | None = None) -> int:
         return 1
 
     paths.bags_dir().mkdir(parents=True, exist_ok=True)
-    # Refresh the watchdog's view with this shell's ROS environment right before
-    # recording — the recorder always has the correct env; the watchdog only has
-    # a frozen copy. This is the shell whose graph the watchdog must match (#29).
-    ros_env.write_file(paths.session_env_path(), ros_env.capture())
     free = shutil.disk_usage(paths.spool_dir()).free
     if free < MIN_FREE_BYTES:
         proceed = Confirm.ask(
@@ -87,6 +83,12 @@ def run(args, console: Console | None = None) -> int:
     output = str(paths.bags_dir() / f"{_bag_prefix()}_{stamp}")
     command = build_record_command(output)
     console.print(f"[dim]Recording to {output} — press Ctrl-C to stop.[/dim]")
+
+    # Hand this shell's ROS environment to the watchdog now that recording is
+    # actually starting (every preflight passed) — the recorder has the correct
+    # env, the watchdog only a frozen copy it must match (#29). Written here, not
+    # earlier, so an aborted preflight never leaves a stale handoff behind.
+    ros_env.write_file(paths.session_env_path(), ros_env.capture())
 
     child = subprocess.Popen(command)
     try:
