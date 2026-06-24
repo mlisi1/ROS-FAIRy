@@ -136,12 +136,15 @@ Each saved mission is a self-contained directory:
   **per-file bag checksums + calibration checksums**, and index registration
 - `ros2 fair export` — one portable, `sha256`-checksummed bundle per mission
 - `ros2 fair repair` — make bad-clock recordings playable again (non-destructive)
-- CI gate: ruff + mypy + pytest across Python 3.10–3.13
+- Real-bag validation — committed tiny **real Jazzy (metadata version 9)**
+  bags in `tests/fixtures/` (sqlite3 + mcap) exercise the parse → health →
+  storage-reader → crate-assembly path on every PR; CI fails if they go
+  missing. Regenerate them reproducibly (no robot needed) with
+  `tools/record_real_fixtures.sh` ([how](tests/fixtures/README.md))
+- CI gate: ruff + mypy + pytest (incl. real-bag validation) across
+  Python 3.10–3.13
 
 **Ready, needs a real robot to exercise**
-- Real-bag fixtures — drop bags from `ros2 bag record` into `tests/fixtures/`
-  to validate the core against real Jazzy metadata
-  ([how](tests/fixtures/README.md))
 - Live-ROS smoke tests — `pytest -m ros` on a sourced Jazzy box validates
   plugin registration and the full live pipeline
   ([how](docs/real-robot-smoke-test.md))
