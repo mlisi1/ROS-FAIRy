@@ -64,6 +64,19 @@ Small files (calibrations, compose files, harvest artifacts) are **copied**, not
 moved — their originals belong to the robot's live configuration. Each copy gets
 a sha256 recorded in the manifest (`calibrations[].sha256`).
 
+### Foreign bags: copy, don't move
+
+A bag whose `source` is `detected` or `adopted` (recorded outside
+`mission_record`, referenced in place at its original path — see
+`specs/watchdog.md` and `data_model.md`) is **copied** into the crate via the
+`shutil.copytree` path, not moved: the original lives in the operator's own
+working directory, not the spool, so the tool must not take it over. The
+`file_sha256` digests are still recorded from the copied bytes. If a foreign
+bag's source path has moved or vanished since detection, assembly skips that one
+bag with a plain-language warning (surfaced at `mission_close`) and continues —
+the rest of the mission still saves; the gap is visible to `ros2 fair verify`.
+Only `mission_record` (spool) bags are moved.
+
 ## Raw harvest artifacts
 
 Mirroring the Docker pattern, bulky raw text captured at harvest time lives in
@@ -99,7 +112,8 @@ time** by the assembler (file copies):
 2. Copy small artifacts into staging (harvest/, calibrations/, docker/, README.md)
 3. Write mission_record.json + ro-crate-metadata.json into staging
    (paths inside them are crate-relative and already final)
-4. MOVE bag directories into staging/bags/        ← the only step touching spool data
+4. MOVE spool bag directories into staging/bags/  ← the only step touching spool data
+   (foreign `detected`/`adopted` bags are COPIED here instead; original left in place)
 5. fsync + os.rename(staging → final archive dir)  ← commit point
 6. INSERT mission row into SQLite index
 7. Delete leftover spool files (mission_context.json, harvest.json)
@@ -115,8 +129,10 @@ Failure handling:
 | Step 6 fails (index locked/corrupt) | Archive dir is complete and kept. Print warning: archived fine but won't appear in `ros2 fair list`; `index.py` provides a `reindex()` that rebuilds the DB by scanning archive dirs for `mission_record.json`. |
 | Step 7 fails | Harmless; stale spool JSONs are overwritten by the next mission_start. |
 
-Invariant: **at every instant, each bag exists in exactly one place, and the
-final archive directory either doesn't exist or is complete.** The SQLite index
+Invariant: **at every instant, each spool bag exists in exactly one place, and
+the final archive directory either doesn't exist or is complete.** (Foreign bags
+are copied, so the operator's original and the crate copy coexist by design —
+the invariant governs spool-origin data.) The SQLite index
 is a cache, never the source of truth.
 
 ## SQLite index
