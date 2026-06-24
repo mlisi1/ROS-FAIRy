@@ -207,6 +207,15 @@ The single save/discard decision.
 7. Assembly failure → spool left intact, plain-language error naming the cause
    (disk full, permissions), exit 1. Never half-archived (see `specs/archive.md`).
 
+**Foreign bags.** `harvest.json.bags[]` may include `detected`/`adopted`
+recordings (`source ≠ mission_record`; see `specs/watchdog.md`) that live at
+their original path outside the spool. The assembler ingests them into the crate
+by **copy** (spool bags are moved). If such a bag's source path has moved or
+vanished since detection, the summary shows a plain-language warning ("A
+recording made earlier can no longer be found at <place>") and that bag is
+skipped from the archive — the rest of the mission still saves, and `verify`
+will flag the gap.
+
 `data_quality` is also written to the SQLite index, so `ros2 fair list` flags
 degraded/poor missions and `--json` exposes the field.
 
@@ -447,3 +456,47 @@ Options:
 - `--force` — write into a non-empty output directory.
 - `--json` — emits `{"target", "output", "repaired", "bags": [{"bag", "status",
   …}]}` to stdout.
+
+---
+
+## `ros2 fair adopt <bagdir>`
+
+Pulls a recording the watchdog never saw into the current mission — the manual
+escape hatch for what the dashcam couldn't catch automatically. The dashcam
+already handles the common cases (spool recordings via `mission_record`, and
+recordings started in another terminal via the watchdog's `/proc`
+recorder-process poller — see `specs/watchdog.md`); `adopt` covers the rest: a
+bag recorded while the watchdog was down, copied from another machine, or
+otherwise outside the poller's reach.
+
+Argument: a path to a single rosbag2 recording directory (must contain
+`metadata.yaml` plus its storage file(s)).
+
+Behaviour:
+- **Busy guard (one bag, one mission).** If the watchdog is currently RECORDING
+  (per state file + bag activity), refuse: "The assistant is busy with another
+  recording. Try again once it has finished." Exit 1. This preserves the
+  single-active-bag invariant and avoids racing the poller.
+- **Not a bag** (no `metadata.yaml` / no storage file) → plain-language error,
+  exit 1.
+- Runs the same processing the watchdog's FINALISING step would: parse
+  `metadata.yaml`, run `utils/topic_health.py`, and append a `Bag` entry to
+  `harvest.json.bags[]` with `source = "adopted"` and `path` = the bag's
+  **original absolute path** (referenced in place; copied into the crate at
+  `mission_close`).
+- **Late context.** If `harvest.json` has no harvest context yet (the watchdog
+  never ran, or ROS was down), run the harvest pipeline now as a best effort.
+  Whatever is capturable is captured; the verdict (likely `degraded`/`poor`) is
+  graded at `mission_close` as usual.
+- Adopting appends a (sequential) bag to the mission, consistent with the
+  watchdog finalising a queued bag — it does not start or replace a mission.
+  Run `mission_close` afterwards to review and save.
+
+Registers as a `fair.verb` (`adopt = fair_ros.subcommands.adopt:AdoptVerb`);
+add it to the entry points in `CLAUDE.md` / `setup.py` when implementing.
+
+Exit code `0` on success, `1` on a bad target or the busy guard.
+
+Options:
+- `--json` — emits `{"bag", "source", "path", "status", "health_warnings": n}`
+  to stdout.
