@@ -1,7 +1,19 @@
 # Design note: FAIR-ifying bags recorded outside `mission_record`
 
-**Status:** DRAFT — for discussion, not yet specced or implemented.
+**Status:** Forks resolved (2026-06-24) — ready to spec; not yet implemented.
 **Date:** 2026-06-24
+
+## Decisions (settled 2026-06-24, PR #32)
+
+1. **Detection — `/proc` process-scan as primary.** The watchdog polls `/proc`
+   for the rosbag2 recorder process, resolves the output dir from cmdline/cwd,
+   and harvests at true record-start. inotify-on-spool stays unchanged for the
+   `mission_record` path; `ros2 fair adopt <bagdir>` is the manual escape hatch
+   for off-watchdog / historical bags.
+2. **Concurrency — one bag, one mission.** Keep today's single-active-bag state
+   machine: a second recording (foreign or otherwise) that starts while
+   RECORDING is queued and logged, not captured concurrently. Revisit only if
+   real multi-recording missions show up.
 
 ## Problem
 
@@ -30,7 +42,7 @@ recording, started any way, gets FAIR-ified.
 | **fanotify (mount-wide)** — root watches whole FS for `*.mcap`/`*.db3` | any bag file appearing | heavy, noisy, can't tell a recording from a file copy |
 | **Explicit `ros2 fair adopt <bagdir>`** | historical / off-watchdog bags | manual, not dashcam |
 
-**Lean: `/proc` process-scan as primary.** Robot- and version-agnostic (just
+**DECIDED: `/proc` process-scan as primary.** Robot- and version-agnostic (just
 `/proc`, even lighter than principle #5's subprocess rule), catches recordings
 started any way, and lets harvest fire at **true record-start** instead of after
 the fact. `/proc/<pid>/cmdline` + `/proc/<pid>/cwd` resolve the real output dir.
@@ -77,10 +89,11 @@ partition-correct harvest fall out of the same `/proc` read.
 
 ## Edge cases to resolve
 
-- **Concurrency.** The state machine assumes **one** active bag (a second is
-  queued). A foreign recording overlapping a `mission_record` session — or two
-  operators recording at once — violates the single-mission assumption.
-  → Open question: many-bags-one-mission, or hard-pick one?
+- **Concurrency — DECIDED: one bag, one mission.** Keep the single-active-bag
+  state machine; a second recording (foreign or otherwise) starting while
+  RECORDING is queued and logged, not captured concurrently. Foreign detection
+  must therefore respect the same queue, not bypass it. Revisit only if real
+  multi-recording missions appear.
 - **Recorder vs. file copy** — process detection sidesteps this; fanotify does
   not.
 - **Removable / network mount** as the recording target.
@@ -89,15 +102,13 @@ partition-correct harvest fall out of the same `/proc` read.
   executable / `ros2 bag record` cmdline; avoid false positives from `play`,
   `info`, `convert`.
 
-## Open forks (decide before speccing)
+## Forks (settled 2026-06-24 — see Decisions at top)
 
-1. **Detection:** commit to `/proc` process-scan as primary (lean: yes), or stay
-   spool-only-automatic + add a manual `adopt` command for everything else?
-2. **Concurrency:** one-bag-one-mission (simplest, matches today) vs.
-   many-bags-one-mission (matches reality when several recordings happen in a
-   mission window)?
+1. **Detection:** ✅ `/proc` process-scan as primary, + inotify-on-spool, +
+   manual `adopt`.
+2. **Concurrency:** ✅ one-bag-one-mission (queue a second recording, as today).
 
-## Rough implementation sketch (for later, once forks are settled)
+## Rough implementation sketch
 
 1. Watchdog gains a **recorder-process poller** (e.g. every N s) alongside the
    inotify loop: scan `/proc` for rosbag2 recorder processes, resolve output dir
