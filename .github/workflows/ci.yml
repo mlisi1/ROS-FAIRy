@@ -51,5 +51,17 @@ jobs:
           # the crate-validation integration test).
           pip install -e '.[test]'
 
+      # The real-bag tests (tests/integration/test_real_bags.py) skip cleanly
+      # when tests/fixtures/ has no bags. That keeps a fresh checkout green, but
+      # it also means deleting the committed Jazzy fixtures would silently turn
+      # real-schema validation into a no-op while CI stayed green. Fail loudly
+      # instead, so the version-9 parse/health/crate path stays gated.
+      - name: Verify real-bag fixtures are present
+        run: |
+          test -f tests/fixtures/real_mcap/metadata.yaml
+          test -f tests/fixtures/real_mcap/real_mcap_0.mcap
+          test -f tests/fixtures/real_sqlite3/metadata.yaml
+          test -f tests/fixtures/real_sqlite3/real_sqlite3_0.db3
+
       - name: Run test suite
         run: python -m pytest tests/ -v
