@@ -1,7 +1,27 @@
 # Design note: FAIR-ifying bags recorded outside `mission_record`
 
-**Status:** Forks resolved (2026-06-24) — ready to spec; not yet implemented.
+**Status:** ✅ Shipped (2026-06-25) — see "Shipped" below.
 **Date:** 2026-06-24
+
+## Shipped (2026-06-25)
+
+Implemented and merged to `main` via the stack #32 (this design note) → #33
+(specs + verb registration) → #34 (implementation), with docs in #36. The
+design held up as written, with one naming change worth flagging:
+
+- `bags[].source` landed as **`"detected"`** (watchdog `/proc` poller) and
+  **`"adopted"`** (`ros2 fair adopt`), not the single `"foreign"` value the
+  sketch below proposed. The two share a `FOREIGN_SOURCES` set in
+  `manifest/schema.py` and are treated identically downstream (referenced in
+  place, copied — not moved — into the crate at `mission_close`).
+- The poller lives in `fair_ros/watchdog/recorder_scan.py` (`scan()` injected
+  into `Watchdog`); interval `FOREIGN_SCAN_INTERVAL_S`.
+
+Deferred (tracked, non-blocking): the `-m ros` live smoke tests await a real
+ROS 2 box; a foreign bag that vanishes *during* archive assembly aborts the
+save instead of being dropped with a warning (issue #35).
+
+The rest of this note is preserved as the original design record.
 
 ## Decisions (settled 2026-06-24, PR #32)
 
