@@ -22,9 +22,6 @@ from fair_ros.utils import ros_env
 log = logging.getLogger("fair_ros.watchdog.recorder_scan")
 
 STORAGE_SUFFIXES = (".db3", ".mcap")
-# `ros2 bag <verb>` verbs that are NOT a recording — never adopt these.
-_NON_RECORD_VERBS = frozenset(
-    {"play", "info", "convert", "reindex", "list"})
 
 
 class FoundRecorder(TypedDict):
@@ -42,13 +39,18 @@ def _read_cmdline(pid: str) -> list[str]:
 
 
 def _is_record_cmd(argv: list[str]) -> bool:
-    """True when argv is a ``... bag record ...`` invocation (not play/info/...)."""
+    """True when argv is a ``... bag record ...`` invocation (not play/info/...).
+
+    The verb immediately after ``bag`` is the authoritative discriminator, so an
+    output dir or topic named like another verb (e.g. ``-o info``) is not
+    mistaken for it.
+    """
     try:
         bag_i = argv.index("bag")
     except ValueError:
         return False
     verb = argv[bag_i + 1] if bag_i + 1 < len(argv) else ""
-    return verb == "record" and not (_NON_RECORD_VERBS & set(argv))
+    return verb == "record"
 
 
 def _output_arg(argv: list[str]) -> str | None:

@@ -39,6 +39,9 @@ def test_is_record_cmd_matches_only_recorder():
     assert not recorder_scan._is_record_cmd(["ros2", "bag", "convert", "x"])
     assert not recorder_scan._is_record_cmd(["ros2", "topic", "list"])
     assert not recorder_scan._is_record_cmd([])
+    # an output dir or topic named like another verb must not be excluded
+    assert recorder_scan._is_record_cmd(
+        ["ros2", "bag", "record", "-o", "info", "/chatter"])
 
 
 def test_output_arg_forms():
