@@ -175,6 +175,10 @@ class Provenance(_Model):
     hostname: str = ""
     kernel: str = ""
     arch: str = ""
+    # Result of the pre-record clock-sync check (utils/clock.is_synchronized),
+    # recorded regardless of outcome so the archive shows it was performed.
+    # True/False, or None when it couldn't be determined / pre-1.0 records.
+    clock_synchronized: bool | None = None
     field_confidence: dict[str, str] = Field(default_factory=dict)
     harvest_status: dict[str, str] = Field(default_factory=dict)
     # Overall data-quality verdict from manifest/quality.assess at close time:

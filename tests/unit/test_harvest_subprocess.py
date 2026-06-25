@@ -134,3 +134,13 @@ def test_system_info_no_dpkg(monkeypatch):
         data = system_info.harvest()
     assert data["ros_distro"] is None
     assert data["apt_ros_versions"] == {}
+
+
+def test_system_info_records_clock_sync():
+    dpkg = _completed("ros-jazzy-rclpy 7.1.0\n")
+    with mock.patch("subprocess.run", return_value=dpkg), \
+            mock.patch.object(system_info.clock, "is_synchronized",
+                              return_value=False):
+        data = system_info.harvest()
+    # captured regardless of outcome so the archive shows the check ran (#27)
+    assert data["clock_synchronized"] is False
