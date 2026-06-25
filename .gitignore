@@ -26,6 +26,7 @@ env/
 fair_out_*.zip
 afternoon_*.zip
 *_2026-*.zip
+*_fair_val.zip
 ros_test_out.txt
 
 # Editor / OS
