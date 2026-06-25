@@ -212,16 +212,24 @@ def test_adopt_harvests_when_no_context(fair_dirs, tmp_path, monkeypatch):
 
 # -- assembler: copy foreign, drop vanished ------------------------------------
 
-def _record_with_bag(bag_path, source):
-    harvest = good_pipeline()
-    harvest["bags"] = [{
+def _bag_entry(bag_path, source):
+    return {
         "path": str(bag_path), "source": source, "storage_format": "sqlite3",
         "size_bytes": fsio.dir_size_bytes(bag_path), "start_time": None,
         "end_time": None, "duration_s": None, "message_count": 0,
         "topics": [], "health_warnings": [],
-    }]
+    }
+
+
+def _record_with_bags(harvest, *bags):
+    harvest["bags"] = list(bags)
     context = builder.new_mission_context("Op", "Goal", "Loc")
     return builder.build(harvest, context), harvest
+
+
+def _record_with_bag(bag_path, source):
+    return _record_with_bags(good_pipeline(),
+                             _bag_entry(bag_path, source))
 
 
 def test_foreign_bag_copied_not_moved(fair_dirs, tmp_path):
@@ -247,6 +255,30 @@ def test_spool_bag_still_moved(fair_dirs):
     crate = assembler.assemble(record, harvest)
     assert (crate / "bags" / "rosbag2_m").is_dir()
     assert not bag.exists()  # moved out of the spool
+
+
+def test_foreign_bag_vanishing_mid_assembly_is_not_fatal(
+        fair_dirs, tmp_path, monkeypatch):
+    """A foreign bag deleted *during* assembly is dropped, not fatal (#35)."""
+    foreign = make_bag(tmp_path / "ext", {"/fix": [T0, T0 + 1]})
+    spool = make_bag(paths.bags_dir() / "rosbag2_keep", {"/fix": [T0, T0 + 1]})
+    record, harvest = _record_with_bags(
+        good_pipeline(),
+        _bag_entry(foreign, "detected"),
+        _bag_entry(spool, "mission_record"))
+
+    def vanishing_copytree(src, dst, *a, **k):
+        shutil.rmtree(src)  # operator deletes it just as the copy begins
+        raise FileNotFoundError(src)
+    monkeypatch.setattr(assembler.shutil, "copytree", vanishing_copytree)
+
+    crate = assembler.assemble(record, harvest)
+    # the save completed; the spool bag survived and the foreign one was dropped
+    assert (crate / "bags" / "rosbag2_keep").is_dir()
+    assert not (crate / "bags" / "ext").exists()
+    assert [b.source for b in record.bags] == ["mission_record"]
+    # and the crate is internally consistent (manifest matches what's on disk)
+    assert all((crate / b.path).is_dir() for b in record.bags)
 
 
 # -- builder: vanished-foreign warning -----------------------------------------
