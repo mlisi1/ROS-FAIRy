@@ -111,6 +111,11 @@ def test_clock_is_synchronized_parsing():
         assert clock.is_synchronized() is None
 
 
+def test_clock_warning_points_to_repair():
+    # the bad-clock warning routes the operator to the recovery path (#27)
+    assert "ros2 fair repair" in clock.WARNING
+
+
 def test_mission_record_aborts_on_unsynced_clock(fair_dirs):
     _spool(fair_dirs)  # a mission context, so the briefing prompt is skipped
     console = _console()

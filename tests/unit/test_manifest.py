@@ -61,6 +61,26 @@ def test_compose_harvest_sensor_liveness():
     assert h["provenance"]["harvest_status"] == STATUS
 
 
+def test_clock_sync_persisted_to_provenance():
+    h = builder.compose_harvest(
+        identity=IDENTITY,
+        system={"hostname": "robot1", "kernel": "Linux 6.8", "arch": "aarch64",
+                "ros_distro": "jazzy", "apt_ros_versions": {},
+                "clock_synchronized": False},
+        graph=GRAPH, docker=None, descriptions=None, harvest_status=STATUS)
+    assert h["provenance"]["clock_synchronized"] is False
+    h["bags"] = [BAG]
+    record = builder.build(h, _context())
+    assert record.provenance.clock_synchronized is False
+
+
+def test_clock_sync_defaults_none_when_absent():
+    # pre-1.0 harvest (no clock key) parses without error, field stays None
+    h = _harvest()
+    assert h["provenance"]["clock_synchronized"] is None
+    assert builder.build(h, _context()).provenance.clock_synchronized is None
+
+
 def test_compose_harvest_liveness_unknown_when_graph_failed():
     # When the graph harvest failed we can't tell — don't claim sensors absent.
     status = {**STATUS, "ros_graph": "failed"}
