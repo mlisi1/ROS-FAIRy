@@ -18,6 +18,19 @@ network, everything on the robot.
 
 ## Commands
 
+> **Run `setup` from a root shell with ROS sourced and the robot graph visible.**
+> The background watchdog runs as a system service with no login shell, so
+> `setup` snapshots *your shell's* ROS environment for it. `sudo su` strips that
+> environment, so source ROS *inside* the root shell and check `ros2 node list`
+> first — `setup` now fails (rather than warning) if it can't capture a ROS
+> environment or sees no nodes:
+> ```
+> sudo su
+> source /opt/ros/<distro>/setup.bash   # + the overlay that sets ROS_DOMAIN_ID / RMW
+> ros2 node list                        # must list your robot's nodes
+> ros2 fair setup
+> ```
+
 ```
 ros2 fair setup            # one-time robot setup (engineer, needs sudo)
 ros2 fair doctor           # preflight: is the robot ready to capture a mission?
@@ -30,11 +43,12 @@ ros2 fair diff [A] [B]     # compare two missions, show only what changed
 ros2 fair verify [M]       # check a saved archive is complete and unmodified
 ros2 fair export [M]       # package a mission into one portable, checksummed file
 ros2 fair repair [M]       # re-stamp bad-clock recordings so they play again
+ros2 fair adopt [BAGDIR]   # pull a bag recorded outside mission_record into the mission
 ```
 
 All verbs accept `--debug` for verbose logging to stderr. `mission_status`,
-`list`, `diff`, `verify`, `doctor`, `export`, and `repair` accept `--json` for
-machine-readable output (for scripts).
+`list`, `diff`, `verify`, `doctor`, `export`, `repair`, and `adopt` accept
+`--json` for machine-readable output (for scripts).
 
 `mission_close` accepts `--note TEXT` to attach post-mission notes without
 an interactive prompt.
@@ -45,8 +59,18 @@ The tool actively prevents the field failures that produce useless data:
 
 - **Preflight check** — `ros2 fair doctor` reports a single READY / NOT READY
   verdict: watchdog running, ROS reachable (from your shell *and* from the
-  background service), clock synchronised, `mcap` present, disk space, robot
-  identity. Run it before a mission instead of discovering problems after.
+  background service), the service's own ROS environment present and on the same
+  `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` as you, clock synchronised, `mcap`
+  present, disk space, robot identity. Run it before a mission instead of
+  discovering problems after.
+- **Service-env reconciliation** — the watchdog starts from a frozen ROS-env
+  snapshot taken at `setup`, which goes blind if you later record under a
+  different domain or RMW. `mission_start` / `mission_record` hand the live
+  recording shell's DDS discovery settings (domain, RMW) to the watchdog, so its
+  background harvest always sees the same ROS graph the recorder does — no more
+  empty-graph archives from env drift. (Only discovery keys are adopted from
+  that group-writable handoff, never loader paths, so it can't be used to run
+  code as the root service.)
 - **Clock guardrail** — an unsynchronised system clock stamps messages near the
   epoch, making recordings unplayable. `mission_record` refuses to record on a
   bad clock unless you confirm; `mission_start` warns.
@@ -57,6 +81,14 @@ The tool actively prevents the field failures that produce useless data:
 - **Recovery** — `ros2 fair repair` writes playable copies of bad-clock
   recordings (re-stamped, regenerated `metadata.yaml`, originals untouched). See
   [docs/recovering-bad-clock-bags.md](docs/recovering-bad-clock-bags.md).
+- **Foreign-bag detection** — the dashcam also FAIR-ifies recordings started
+  outside `mission_record` (a plain `ros2 bag record` in another terminal). The
+  watchdog spots the running recorder, harvests on its DDS partition, and tags
+  the bag `detected`. For a recording the watchdog never saw — made while it was
+  down, or copied from another machine — `ros2 fair adopt <bag-dir>` pulls it
+  into the current mission by hand. Foreign recordings are referenced where they
+  are and *copied* (never moved) into the crate at `mission_close`, so the
+  operator's original is left untouched.
 
 ## What gets captured automatically
 
@@ -113,12 +145,17 @@ Each saved mission is a self-contained directory:
   **per-file bag checksums + calibration checksums**, and index registration
 - `ros2 fair export` — one portable, `sha256`-checksummed bundle per mission
 - `ros2 fair repair` — make bad-clock recordings playable again (non-destructive)
-- CI gate: ruff + mypy + pytest across Python 3.10–3.13
+- Foreign-bag detection — auto-detect bags recorded outside `mission_record`
+  (watchdog `/proc` poller), plus `ros2 fair adopt` to pull one in by hand
+- Real-bag validation — committed tiny **real Jazzy (metadata version 9)**
+  bags in `tests/fixtures/` (sqlite3 + mcap) exercise the parse → health →
+  storage-reader → crate-assembly path on every PR; CI fails if they go
+  missing. Regenerate them reproducibly (no robot needed) with
+  `tools/record_real_fixtures.sh` ([how](tests/fixtures/README.md))
+- CI gate: ruff + mypy + pytest (incl. real-bag validation) across
+  Python 3.10–3.13
 
 **Ready, needs a real robot to exercise**
-- Real-bag fixtures — drop bags from `ros2 bag record` into `tests/fixtures/`
-  to validate the core against real Jazzy metadata
-  ([how](tests/fixtures/README.md))
 - Live-ROS smoke tests — `pytest -m ros` on a sourced Jazzy box validates
   plugin registration and the full live pipeline
   ([how](docs/real-robot-smoke-test.md))

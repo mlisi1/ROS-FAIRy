@@ -44,7 +44,9 @@ class Sensor(_Model):
     topic: str
     frame_id: str | None = None
     calibration_ref: str | None = None
-    detected_at_start: bool = False
+    # True = seen publishing, False = live graph confirmed it absent,
+    # None = couldn't tell (the harvest couldn't reach the ROS graph).
+    detected_at_start: bool | None = None
 
 
 class DockerContainer(_Model):
@@ -135,8 +137,20 @@ class HealthWarning(_Model):
     plain_text: str
 
 
+# Bag.source values for recordings made outside `ros2 fair mission_record`
+# (referenced in place at their original path, copied into the crate at archive
+# time rather than moved). See specs/watchdog.md and specs/archive.md.
+FOREIGN_SOURCES = frozenset({"detected", "adopted"})
+
+
 class Bag(_Model):
     path: str
+    # How the recording entered the pipeline: "mission_record" (recorded by the
+    # wrapper into the spool, moved into the crate), "detected" (found running
+    # outside the wrapper by the watchdog's /proc poller) or "adopted" (ingested
+    # after the fact by `ros2 fair adopt`). The latter two are "foreign" — see
+    # FOREIGN_SOURCES — and are referenced in place then copied, not moved.
+    source: str = "mission_record"
     storage_format: str
     size_bytes: int
     # None when the recording clock was too unreliable to recover the real
@@ -161,6 +175,10 @@ class Provenance(_Model):
     hostname: str = ""
     kernel: str = ""
     arch: str = ""
+    # Result of the pre-record clock-sync check (utils/clock.is_synchronized),
+    # recorded regardless of outcome so the archive shows it was performed.
+    # True/False, or None when it couldn't be determined / pre-1.0 records.
+    clock_synchronized: bool | None = None
     field_confidence: dict[str, str] = Field(default_factory=dict)
     harvest_status: dict[str, str] = Field(default_factory=dict)
     # Overall data-quality verdict from manifest/quality.assess at close time:

@@ -20,10 +20,28 @@ Global rules:
 One-time, per-robot, run by an engineer (jargon is allowed here, and only here).
 Idempotent: re-running shows current values as defaults.
 
+> **Run setup from a root shell that has ROS sourced and can see the robot.**
+> The watchdog runs as a system service with **no** login shell, so setup
+> snapshots *this shell's* ROS environment into `/etc/fair-ros/watchdog.env`
+> (loaded by the unit's `EnvironmentFile=`). Becoming root with `sudo su` (or
+> when `sudo -E` is blocked) strips that environment, so source ROS *inside* the
+> root shell and confirm `ros2 node list` lists your robot's nodes before
+> running setup:
+> ```
+> sudo su
+> source /opt/ros/<distro>/setup.bash   # + the overlay that sets ROS_DOMAIN_ID / RMW
+> ros2 node list                        # must list your robot's nodes
+> ros2 fair setup
+> ```
+
 Flow:
 
 1. **Preflight** — check running as root or with sudo-able rights; check `ros2`
-   on PATH; warn (not fail) if Docker absent.
+   on PATH; warn (not fail) if Docker absent. **Fail (not warn)** if no ROS
+   environment can be captured for the service (`ROS_DISTRO` unset) or the robot
+   graph isn't visible (`ros2 node list` empty) — either means the watchdog
+   would start blind and harvest an empty graph at every mission. The error
+   prints the `sudo su` + `source` recipe above.
 2. **Robot questions** (rich prompts, defaults from existing yaml if present):
    1. Robot name — non-empty, ≤ 40 chars.
    2. Platform (make and model) — non-empty.
@@ -80,6 +98,20 @@ Questions (exactly these five, in this order):
 Then: generate `mission_id` + `created_at`, write the JSON atomically, show a
 closing panel: "Mission briefing saved. Start recording with: ros2 fair
 mission_record".
+
+**ROS-env re-snapshot.** Both `mission_start` and `mission_record` write this
+shell's ROS environment to `<spool>/session.env`. The recorder always has the
+correct environment (it *is* the operator's live shell); the watchdog only has
+the frozen `watchdog.env` snapshot, which goes blind if the operator records
+under a different `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION`. At harvest time the
+watchdog adopts `session.env`'s DDS discovery keys
+(`ros_env.SESSION_ADOPT_KEYS`) over its own, so its harvest lands on the same
+partition as the session actually recording (closes the drift that produced
+empty-graph archives). `session.env` is group-writable and the watchdog runs as
+root, so **only** discovery keys are adopted — never `PATH` / `LD_LIBRARY_PATH`
+/ `PYTHONPATH` / overlay paths, which would be a privilege-escalation vector;
+the base ROS install comes only from the root-owned `watchdog.env`. The file is
+removed when the spool is cleared at `mission_close`.
 
 ---
 
@@ -174,6 +206,15 @@ The single save/discard decision.
        (the operator can rerun mission_close later).
 7. Assembly failure → spool left intact, plain-language error naming the cause
    (disk full, permissions), exit 1. Never half-archived (see `specs/archive.md`).
+
+**Foreign bags.** `harvest.json.bags[]` may include `detected`/`adopted`
+recordings (`source ≠ mission_record`; see `specs/watchdog.md`) that live at
+their original path outside the spool. The assembler ingests them into the crate
+by **copy** (spool bags are moved). If such a bag's source path has moved or
+vanished since detection, the summary shows a plain-language warning ("A
+recording made earlier can no longer be found at <place>") and that bag is
+skipped from the archive — the rest of the mission still saves, and `verify`
+will flag the gap.
 
 `data_quality` is also written to the SQLite index, so `ros2 fair list` flags
 degraded/poor missions and `--json` exposes the field.
@@ -314,6 +355,7 @@ Runs these checks, each a plain-language ✓/!/✗/– line (with a `→ hint` u
 | recording assistant (watchdog) running, heartbeat fresh | ✗ fail (! if stale) |
 | ROS 2 reachable from **this shell** (`ros2 node list` non-empty) | ✗ fail (! if reachable but no nodes) |
 | ROS environment sourced here (`ROS_DISTRO` set; reports rmw/domain) | ! warn |
+| the **service's** env (`/etc/fair-ros/watchdog.env`) exists with `ROS_DISTRO`, and its `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` match this shell | ✗ fail if missing/no distro; ! warn on domain/RMW drift |
 | the **watchdog's own** last graph harvest succeeded (service-context truth — the empty-archive failure) | ✗ fail (– if it hasn't harvested yet) |
 | system clock NTP-synchronised (`utils/clock`) | ✗ fail (– if undeterminable) |
 | `mcap` available for bag timing/health | ! warn |
@@ -414,3 +456,47 @@ Options:
 - `--force` — write into a non-empty output directory.
 - `--json` — emits `{"target", "output", "repaired", "bags": [{"bag", "status",
   …}]}` to stdout.
+
+---
+
+## `ros2 fair adopt <bagdir>`
+
+Pulls a recording the watchdog never saw into the current mission — the manual
+escape hatch for what the dashcam couldn't catch automatically. The dashcam
+already handles the common cases (spool recordings via `mission_record`, and
+recordings started in another terminal via the watchdog's `/proc`
+recorder-process poller — see `specs/watchdog.md`); `adopt` covers the rest: a
+bag recorded while the watchdog was down, copied from another machine, or
+otherwise outside the poller's reach.
+
+Argument: a path to a single rosbag2 recording directory (must contain
+`metadata.yaml` plus its storage file(s)).
+
+Behaviour:
+- **Busy guard (one bag, one mission).** If the watchdog is currently RECORDING
+  (per state file + bag activity), refuse: "The assistant is busy with another
+  recording. Try again once it has finished." Exit 1. This preserves the
+  single-active-bag invariant and avoids racing the poller.
+- **Not a bag** (no `metadata.yaml` / no storage file) → plain-language error,
+  exit 1.
+- Runs the same processing the watchdog's FINALISING step would: parse
+  `metadata.yaml`, run `utils/topic_health.py`, and append a `Bag` entry to
+  `harvest.json.bags[]` with `source = "adopted"` and `path` = the bag's
+  **original absolute path** (referenced in place; copied into the crate at
+  `mission_close`).
+- **Late context.** If `harvest.json` has no harvest context yet (the watchdog
+  never ran, or ROS was down), run the harvest pipeline now as a best effort.
+  Whatever is capturable is captured; the verdict (likely `degraded`/`poor`) is
+  graded at `mission_close` as usual.
+- Adopting appends a (sequential) bag to the mission, consistent with the
+  watchdog finalising a queued bag — it does not start or replace a mission.
+  Run `mission_close` afterwards to review and save.
+
+Registers as a `fair.verb` (`adopt = fair_ros.subcommands.adopt:AdoptVerb`);
+add it to the entry points in `CLAUDE.md` / `setup.py` when implementing.
+
+Exit code `0` on success, `1` on a bad target or the busy guard.
+
+Options:
+- `--json` — emits `{"bag", "source", "path", "status", "health_warnings": n}`
+  to stdout.

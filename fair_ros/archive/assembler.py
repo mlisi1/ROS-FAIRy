@@ -8,6 +8,7 @@ either doesn't exist or is complete.
 
 import errno
 import json
+import logging
 import re
 import shutil
 import unicodedata
@@ -17,8 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from fair_ros.archive import index, ro_crate
-from fair_ros.manifest.schema import MissionRecord
+from fair_ros.manifest.schema import FOREIGN_SOURCES, MissionRecord
 from fair_ros.utils import fsio, paths
+
+log = logging.getLogger("fair_ros.archive.assembler")
 
 
 class AssemblyError(Exception):
@@ -163,6 +166,12 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
         shutil.rmtree(staging)
     final = paths.archive_dir() / name
 
+    # Foreign recordings are referenced where they were made; drop any whose
+    # source vanished since detection so the crate never references a missing
+    # bag (the loss is reported to the operator via harvest_level_warnings).
+    record.bags = [b for b in record.bags
+                   if b.source not in FOREIGN_SOURCES or Path(b.path).is_dir()]
+
     spool_bags = [Path(b.path) for b in record.bags]
     moved: list[tuple[Path, Path]] = []
     try:
@@ -256,9 +265,31 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
                     "name": f"Compose file ({project})",
                     "encodingFormat": "application/yaml"})
 
-        # Crate-relative bag paths + per-file checksums (the bag is moved
-        # verbatim, so hashing the spool copy pins the archived bytes) +
-        # assembly provenance, then manifests.
+        # Step 3a: copy foreign recordings into staging *before* the manifests
+        # are written. Copying is non-destructive (the operator's original is
+        # left in place), so it is safe to do this early — and a foreign bag
+        # that vanished since the pre-assembly check is dropped here with a
+        # warning rather than aborting the whole save (issue #35). The manifests
+        # below then describe exactly the bags that made it into the crate.
+        surviving_bags, surviving_spool = [], []
+        for bag, spool_bag in zip(record.bags, spool_bags, strict=True):
+            if bag.source in FOREIGN_SOURCES:
+                if progress:
+                    progress(f"Copying recording {spool_bag.name}")
+                try:
+                    shutil.copytree(spool_bag, staging / "bags" / spool_bag.name)
+                except OSError as exc:
+                    log.warning("foreign recording %s vanished during assembly "
+                                "(%s); dropping it from the mission",
+                                spool_bag, exc)
+                    continue
+            surviving_bags.append(bag)
+            surviving_spool.append(spool_bag)
+        record.bags, spool_bags = surviving_bags, surviving_spool
+
+        # Crate-relative bag paths + per-file checksums (spool bags are moved
+        # verbatim and foreign bags are now copied into staging, so hashing the
+        # source pins the archived bytes) + assembly provenance, then manifests.
         for bag, spool_bag in zip(record.bags, spool_bags, strict=True):
             bag.file_sha256 = _bag_file_hashes(spool_bag)
             bag.path = f"bags/{spool_bag.name}"
@@ -283,9 +314,13 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
         raise AssemblyError(f"Saving failed ({exc.strerror or exc}). "
                             "Nothing was changed.") from exc
 
-    # Step 4: move bags — the only step that touches spool data
+    # Step 4: move spool bags — the only step touching spool data. Foreign
+    # recordings were already copied into staging in step 3a (their original
+    # belongs to the operator), so they are skipped here.
     try:
-        for src in spool_bags:
+        for bag, src in zip(record.bags, spool_bags, strict=True):
+            if bag.source in FOREIGN_SOURCES:
+                continue
             dest = staging / "bags" / src.name
             _move_bag(src, dest, progress)
             moved.append((src, dest))
@@ -317,7 +352,8 @@ def assemble(record: MissionRecord, harvest_doc: dict[str, Any],
 
     # Step 7: clear spool context files
     for leftover in (paths.harvest_json_path(),
-                     paths.mission_context_path()):
+                     paths.mission_context_path(),
+                     paths.session_env_path()):
         try:
             leftover.unlink(missing_ok=True)
         except OSError:

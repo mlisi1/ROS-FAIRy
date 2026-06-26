@@ -50,14 +50,39 @@ own select loop so we can also service timers).
 
 Exactly one bag directory is active at a time (single-robot, single-mission
 assumption). If a second bag directory appears while RECORDING, it is queued and
-processed after the current one finalises; the overlap is logged.
+processed after the current one finalises; the overlap is logged. This is a hard
+invariant: a foreign recording found by the recorder-process poller (see
+*Foreign-bag detection* below) is subject to the **same** queue — it is never
+harvested concurrently with the active bag, regardless of which one is the
+spool bag.
 
 ### IDLE → RECORDING
 
-Trigger: first storage file (`.db3`/`.mcap`) created inside a new bag directory under W1.
-(`metadata.yaml` alone does not trigger — rosbag2 writes it only on close.)
+Trigger, whichever comes first:
+- first storage file (`.db3`/`.mcap`) created inside a new bag directory under W1
+  (`metadata.yaml` alone does not trigger — rosbag2 writes it only on close), or
+- the recorder-process poller detects a **new foreign recording** (a
+  `ros2 bag record` started outside the spool — see *Foreign-bag detection*).
 
-On entry, run the harvest pipeline **in this order** (cheap and local first, so a
+On entry, before the pipeline, the watchdog adopts the **live recording shell's**
+DDS discovery settings if `<spool>/session.env` exists (written by
+`mission_start` / `mission_record`), overlaying its own environment. The
+watchdog's own env is the frozen `watchdog.env` snapshot from setup, which goes
+blind under domain / RMW drift; adopting the recorder's discovery keys keeps the
+harvest's `ros2` subprocesses and rclpy on the same DDS partition as the session
+being recorded. Only `ros_env.SESSION_ADOPT_KEYS` (domain, RMW, discovery range
+/ peers) are adopted — `session.env` is group-writable and the watchdog runs as
+root, so loader paths (`PATH` / `LD_LIBRARY_PATH` / `PYTHONPATH` / overlay) are
+never trusted from it; the base ROS install comes only from `watchdog.env`.
+
+For a **foreign** recording (no `mission_record`, so no `session.env`), the same
+discovery keys are read instead from the recorder process's own
+`/proc/<pid>/environ` — the recorder is, by definition, on the partition we need
+to harvest, so its environment is the authoritative source. The identical
+security rule applies: only `SESSION_ADOPT_KEYS` are adopted from `/proc/environ`,
+never loader paths.
+
+Then run the harvest pipeline **in this order** (cheap and local first, so a
 broken ROS graph cannot delay capturing what is capturable):
 
 1. `harvest/robot_identity.py` — read + validate the yaml. No timeout needed.
@@ -124,11 +149,65 @@ Trigger, whichever comes first:
 No archiving happens here. Archiving is exclusively triggered by the operator via
 `ros2 fair mission_close`.
 
+## Foreign-bag detection (recordings started outside `mission_record`)
+
+The dashcam must FAIR-ify *any* recording, not only those started via
+`ros2 fair mission_record`. The wrapper records into the spool, where inotify
+sees it; a plain `ros2 bag record -o ~/run42 /scan` in another terminal lands in
+the operator's cwd and is otherwise invisible. To close this gap the watchdog
+runs a **recorder-process poller** alongside the inotify/select loop.
+
+**Detection — `/proc` scan (DECIDED, PR #32).** Every `FOREIGN_SCAN_INTERVAL_S`
+the watchdog scans `/proc` for a live rosbag2 **recorder** process:
+
+- Match the rosbag2 recorder by its command line (`ros2 bag record …` / the
+  rosbag2 recorder executable). **Exclude** `play` / `info` / `convert` /
+  `reindex` — only an active *recorder* counts. Process detection (not
+  filesystem watching) is what distinguishes a real recording from someone
+  copying a `.mcap` file around.
+- Resolve the output directory from the recorder's `--output`/`-o` argument,
+  resolving a relative path against `/proc/<pid>/cwd`; with no `-o`, rosbag2's
+  default is `rosbag2_<timestamp>/` in the cwd.
+- **Dedupe.** Ignore any output dir that is already tracked: spool bags from
+  `mission_record` (already covered by inotify), foreign bags already being
+  tracked, and anything already present in `harvest.json.bags[]`.
+
+This is robot- and version-agnostic (just `/proc`), catches CLI *and*
+launch-file recordings, and lets harvest fire at true record-start.
+
+**On a newly detected foreign recording (when IDLE):**
+
+1. Adopt DDS discovery keys from the recorder's `/proc/<pid>/environ`
+   (`ros_env.SESSION_ADOPT_KEYS` only — see *IDLE → RECORDING* above for the
+   security rule), so the harvest lands on the recorder's partition without a
+   `session.env`.
+2. Arm an inotify **W2** on the resolved output directory and run the normal
+   harvest pipeline — from here the existing RECORDING → FINALISING → IDLE
+   machinery applies unchanged (`metadata.yaml` `CLOSE_WRITE` or the inactivity
+   fallback finalise it; recorder-process exit is an additional finalise hint).
+3. The recording is **referenced in place**, never moved into the spool: the
+   `Bag` entry records `source = "detected"` and `path` = the recording's real
+   absolute path. It is copied into the crate at `mission_close` (the assembler
+   ingests a foreign path the same way it moves a spool bag); if the source has
+   moved or vanished by then, `mission_close` warns and `verify` catches it.
+
+**Concurrency — one bag, one mission (DECIDED, PR #32).** If the watchdog is
+already RECORDING (a spool *or* foreign bag is active), a newly detected foreign
+recorder is queued and logged exactly like a second spool bag, and adopted only
+once the active bag finalises. Foreign detection never bypasses the
+single-active-bag invariant.
+
+**Out of the poller's reach** — a recording finished before a scan saw it, made
+while the watchdog was down, or copied from another machine — is handled by the
+manual `ros2 fair adopt <bagdir>` escape hatch (see `specs/cli.md`), which runs
+the same FINALISING processing and appends a `source = "adopted"` bag entry.
+
 ## Timeout summary
 
 | Constant | Value | Where |
 |---|---|---|
 | `BAG_INACTIVITY_S` | 30 | RECORDING → FINALISING fallback |
+| `FOREIGN_SCAN_INTERVAL_S` | 5 | recorder-process poll for foreign bags |
 | `RCLPY_TIMEOUT_S` | 5 | ros_descriptions |
 | `DOCKER_TIMEOUT_S` | 10 | docker_info total |
 | `PIP_TIMEOUT_S` | 30 | python_env: each pip subprocess |

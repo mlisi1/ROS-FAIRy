@@ -52,7 +52,8 @@ def _discard_spool() -> None:
     if paths.bags_dir().is_dir():
         for bag in paths.bags_dir().glob("*"):
             shutil.rmtree(bag, ignore_errors=True)
-    for f in (paths.harvest_json_path(), paths.mission_context_path()):
+    for f in (paths.harvest_json_path(), paths.mission_context_path(),
+              paths.session_env_path()):
         f.unlink(missing_ok=True)
 
 
@@ -87,6 +88,11 @@ def run(args, console: Console | None = None) -> int:
         console.print("There's nothing recorded yet.")
         return 1
     assert harvest is not None  # a None harvest has no bags, handled above
+
+    # Now that the bags are known, correct sensor liveness against what was
+    # actually recorded (the live-graph sample at mission start can be blind).
+    builder.reconcile_sensor_detection(harvest)
+    fsio.atomic_write_json(paths.harvest_json_path(), harvest)
 
     missing = validator.missing_user_fields(context)
     if missing:

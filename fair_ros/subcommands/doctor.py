@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fair_ros.subcommands import VerbExtension, _configure_logging
-from fair_ros.utils import clock, paths
+from fair_ros.utils import clock, paths, ros_env
 
 OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
 _GLYPH = {OK: "[green]✓[/green]", WARN: "[yellow]![/yellow]",
@@ -103,6 +103,42 @@ def _check_ros_environment() -> dict:
             bits.append(f"{label}: {os.environ[key]}")
     return {"status": OK, "title": "ROS environment sourced",
             "detail": ", ".join(bits), "hint": ""}
+
+
+def _check_service_env() -> dict:
+    """The *service's* effective ROS env — not just this shell's.
+
+    The watchdog starts from a frozen snapshot (``watchdog.env``) captured at
+    setup. That goes blind when the file is missing/stale or when the operator
+    later records under a different ROS_DOMAIN_ID / RMW than setup saw — a robot
+    that passes every shell-context check while the service is on the wrong DDS
+    partition and harvests an empty graph (issue #29).
+    """
+    env = ros_env.read_file(paths.watchdog_env_path())
+    setup_hint = ("re-run setup from a root shell with ROS sourced: `sudo su` "
+                  "→ `source /opt/ros/<distro>/setup.bash` → `ros2 fair setup`")
+    if "ROS_DISTRO" not in env:
+        missing = "missing" if not env else "has no ROS_DISTRO"
+        return {"status": FAIL,
+                "title": "Background service has no ROS environment",
+                "detail": f"{paths.watchdog_env_path()} {missing}",
+                "hint": setup_hint}
+    drift = []
+    for key in ros_env.DISCOVERY_KEYS:
+        service_val = env.get(key, "")
+        shell_val = os.environ.get(key, "")
+        if key == "ROS_DOMAIN_ID":  # an unset domain means 0
+            service_val, shell_val = service_val or "0", shell_val or "0"
+        if shell_val and service_val != shell_val:
+            drift.append(f"{key} {service_val or 'unset'} ≠ {shell_val} here")
+    if drift:
+        return {"status": WARN,
+                "title": "Background service is on a different ROS partition",
+                "detail": "; ".join(drift),
+                "hint": "a mission started with `ros2 fair mission_start` "
+                        "reconciles this automatically; otherwise " + setup_hint}
+    return {"status": OK, "title": "Background service ROS environment matches",
+            "detail": f"distro: {env['ROS_DISTRO']}", "hint": ""}
 
 
 def _check_service_harvest() -> dict:
@@ -191,8 +227,8 @@ def _check_docker() -> dict:
 
 
 _CHECKS = (_check_identity, _check_watchdog, _check_ros_reachable,
-           _check_ros_environment, _check_service_harvest, _check_clock,
-           _check_mcap, _check_disk, _check_docker)
+           _check_ros_environment, _check_service_env, _check_service_harvest,
+           _check_clock, _check_mcap, _check_disk, _check_docker)
 
 
 def diagnose() -> list[dict]:

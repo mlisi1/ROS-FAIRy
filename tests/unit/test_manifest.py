@@ -61,6 +61,63 @@ def test_compose_harvest_sensor_liveness():
     assert h["provenance"]["harvest_status"] == STATUS
 
 
+def test_clock_sync_persisted_to_provenance():
+    h = builder.compose_harvest(
+        identity=IDENTITY,
+        system={"hostname": "robot1", "kernel": "Linux 6.8", "arch": "aarch64",
+                "ros_distro": "jazzy", "apt_ros_versions": {},
+                "clock_synchronized": False},
+        graph=GRAPH, docker=None, descriptions=None, harvest_status=STATUS)
+    assert h["provenance"]["clock_synchronized"] is False
+    h["bags"] = [BAG]
+    record = builder.build(h, _context())
+    assert record.provenance.clock_synchronized is False
+
+
+def test_clock_sync_defaults_none_when_absent():
+    # pre-1.0 harvest (no clock key) parses without error, field stays None
+    h = _harvest()
+    assert h["provenance"]["clock_synchronized"] is None
+    assert builder.build(h, _context()).provenance.clock_synchronized is None
+
+
+def test_compose_harvest_liveness_unknown_when_graph_failed():
+    # When the graph harvest failed we can't tell — don't claim sensors absent.
+    status = {**STATUS, "ros_graph": "failed"}
+    h = builder.compose_harvest(
+        identity=IDENTITY, system={}, graph={}, docker=None, descriptions=None,
+        harvest_status=status)
+    by_id = {s["sensor_id"]: s for s in h["sensors"]}
+    assert by_id["gps0"]["detected_at_start"] is None
+    assert by_id["sonar0"]["detected_at_start"] is None
+
+
+def test_reconcile_sensor_detection_upgrades_from_bag():
+    status = {**STATUS, "ros_graph": "failed"}
+    h = builder.compose_harvest(
+        identity=IDENTITY, system={}, graph={}, docker=None, descriptions=None,
+        harvest_status=status)
+    h["bags"] = [{**BAG, "topics": [
+        {"name": "/fix", "type": "sensor_msgs/msg/NavSatFix", "message_count": 50},
+        {"name": "/depth", "type": "x", "message_count": 0},
+    ]}]
+    builder.reconcile_sensor_detection(h)
+    by_id = {s["sensor_id"]: s for s in h["sensors"]}
+    # /fix carried data -> detected; /depth was silent -> still unknown.
+    assert by_id["gps0"]["detected_at_start"] is True
+    assert by_id["sonar0"]["detected_at_start"] is None
+
+
+def test_warnings_silent_when_liveness_unknown():
+    status = {**STATUS, "ros_graph": "failed"}
+    h = builder.compose_harvest(
+        identity=IDENTITY, system={}, graph={}, docker=None, descriptions=None,
+        harvest_status=status)
+    warnings = builder.harvest_level_warnings(h)
+    # Don't accuse sensors of being down when we couldn't reach the graph.
+    assert not any("didn't seem to be running" in w for w in warnings)
+
+
 def test_new_mission_context_shape():
     ctx = _context()
     assert ctx["identity"]["mission_id"].startswith("m-")

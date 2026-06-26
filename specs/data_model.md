@@ -172,7 +172,8 @@ watchdog FINALISING step from rosbag2's own `metadata.yaml` plus
 
 | Field | Type | Req | Conf | Source | Description |
 |---|---|---|---|---|---|
-| `path` | `str` | yes | auto | watchdog | Relative path inside the crate after assembly (`bags/<dir>`); spool-absolute before. |
+| `path` | `str` | yes | auto | watchdog | Relative path inside the crate after assembly (`bags/<dir>`). Before assembly: the spool-absolute path for `mission_record` bags, or the recording's **original absolute path** for `detected`/`adopted` (foreign) bags, which are referenced in place and only copied into the crate at `mission_close`. |
+| `source` | `str` | yes | auto | watchdog / `adopt` | How the recording entered the pipeline: `mission_record` (recorded by the `ros2 fair mission_record` wrapper into the spool), `detected` (started outside the wrapper — e.g. a plain `ros2 bag record` in another terminal — found by the watchdog's `/proc` recorder-process poller; see `specs/watchdog.md`), or `adopted` (ingested after the fact by `ros2 fair adopt`). `detected`/`adopted` are collectively "foreign". Defaults to `mission_record`. |
 | `storage_format` | `str` | yes | auto | bag `metadata.yaml` | `sqlite3` or `mcap`. When `metadata.yaml` omits it, inferred from the recording distro via `utils/ros_distro.default_storage()` (Jazzy+ → `mcap`, Foxy–Iron → `sqlite3`). |
 | `size_bytes` | `int` | yes | auto | filesystem | Total directory size. |
 | `start_time` | `datetime \| None` | no | auto | message timestamps | First message time. `None` when the recording clock was unreliable (see below). |

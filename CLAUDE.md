@@ -69,6 +69,7 @@ fair-ros/
 │   │   ├── doctor.py                ← preflight readiness self-check (ros2 fair doctor)
 │   │   ├── export.py                ← package a mission into one portable file (ros2 fair export)
 │   │   ├── repair.py                ← re-stamp bad-clock bags so they play (ros2 fair repair)
+│   │   ├── adopt.py                  ← ingest a bag recorded outside mission_record (ros2 fair adopt)
 │   │   └── list_missions.py
 │   ├── harvest/                     ← auto-discovery subsystem
 │   │   ├── ros_graph.py             ← nodes, topics, params via subprocess
@@ -220,8 +221,13 @@ Every field carries a `confidence` tag: `"auto"` or `"user"`.
   `utils/bag_repair` (re-stamped, regenerated `metadata.yaml`, no manual
   reindex); non-destructive (originals untouched); accepts a mission or a single
   bag dir
-  (`mission_status`, `list`, `diff`, `verify`, `doctor`, `export`, and `repair`
-  accept `--json`)
+- `adopt.py` — manual escape hatch to pull a recording the watchdog never saw
+  (made while it was down, copied from another machine, or otherwise outside the
+  `/proc` recorder-process poller's reach) into the current mission: runs the
+  watchdog's FINALISING processing and appends a `source="adopted"` bag to
+  `harvest.json`; referenced in place, copied into the crate at `mission_close`
+  (`mission_status`, `list`, `diff`, `verify`, `doctor`, `export`, `repair`, and
+  `adopt` accept `--json`)
 
 ### Manifest Builder (`manifest/`)
 - `builder.py` merges `harvest.json` + `mission_context.json` → `MissionRecord`
@@ -272,6 +278,7 @@ Subcommands register under:
         'doctor = fair_ros.subcommands.doctor:DoctorVerb',
         'export = fair_ros.subcommands.export:ExportVerb',
         'repair = fair_ros.subcommands.repair:RepairVerb',
+        'adopt = fair_ros.subcommands.adopt:AdoptVerb',
     ],
 ```
 
